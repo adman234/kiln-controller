@@ -1,0 +1,24 @@
+{
+  "_comment": "Optional. Rename to kiln-settings.json and copy to the SD card's boot partition next to vendor-data. Remove the lines you don't need. Temperatures are in the unit set by temp_scale. Everything here can also be changed later in the web UI.",
+
+  "temp_scale": "f",
+  "simulate": false,
+
+  "sensor_board": "max31855",
+  "thermocouple_type": "K",
+  "spi_mode": "software",
+  "spi_sclk": 17,
+  "spi_miso": 27,
+  "spi_cs": 22,
+  "gpio_heat": 23,
+
+  "kw_elements": 9.46,
+  "kwh_rate": 0.15,
+  "currency_type": "$",
+  "emergency_shutoff_temp": 2264,
+
+  "notify_service": "ntfy",
+  "notify_url": "https://ntfy.sh/replace-with-a-long-random-topic-name",
+
+  "web_password": ""
+}

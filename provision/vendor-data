@@ -1,0 +1,134 @@
+#!/bin/bash
+# kiln-controller: zero-touch install on first boot.
+#
+# Copy this file, named exactly "vendor-data" (no .txt), onto the SD card's
+# boot partition ("bootfs") after Raspberry Pi Imager has written it.
+# Raspberry Pi OS (Trixie and later) runs it once, via cloud-init, after
+# Imager's own settings (user, Wi-Fi, hostname) have been applied.
+#
+# Optional files next to it on the boot partition:
+#   kiln-install.conf   install options (see the example in the repo)
+#   kiln-settings.json  controller settings (sensor, pins, units, alerts...)
+#
+# Progress: http://<hostname>.local:8081 while installing.
+# Log:      kiln-install.log on the boot partition.
+
+BOOT="${KILN_BOOT:-/boot/firmware}"
+[ -d "$BOOT" ] || BOOT=/boot
+LOG="$BOOT/kiln-install.log"
+STATUS_DIR="${KILN_STATUS_DIR:-/run/kiln-install}"
+STEP_FILE="$STATUS_DIR/step"
+
+mkdir -p "$STATUS_DIR"
+exec > >(tee -a "$LOG") 2>&1
+echo "=== kiln-controller install started $(date) ==="
+
+# ---- options from kiln-install.conf (KEY=value lines, nothing executed)
+REPO_URL="https://github.com/adman234/kiln-controller"
+BRANCH="main"
+PROTECT_SD=1
+TAILSCALE=0
+TAILSCALE_AUTHKEY=""
+KILN_USER=""
+REBOOT=1
+if [ -f "$BOOT/kiln-install.conf" ]; then
+    while IFS='=' read -r key value; do
+        key="$(echo "$key" | tr -d '[:space:]')"
+        value="$(echo "$value" | sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/')"
+        case "$key" in
+            REPO_URL|BRANCH|PROTECT_SD|TAILSCALE|TAILSCALE_AUTHKEY|KILN_USER|REBOOT)
+                printf -v "$key" '%s' "$value" ;;
+        esac
+    done < <(grep -E '^[A-Z_]+=' "$BOOT/kiln-install.conf")
+fi
+
+# ---- progress page
+render() {
+    local step; step="$(cat "$STEP_FILE" 2>/dev/null)"
+    local tail; tail="$(tail -n 40 "$LOG" 2>/dev/null | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
+    cat > "$STATUS_DIR/index.html.tmp" <<HTML
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="10"><title>Kiln controller install</title>
+<style>body{font-family:system-ui,sans-serif;background:#b9b6af;color:#222;margin:0;padding:16px}
+.card{background:#fafafa;border-radius:8px;padding:16px;max-width:860px;margin:auto}
+pre{background:#3F3E3A;color:#d8d3c5;padding:10px;border-radius:6px;overflow-x:auto;font-size:12px}</style></head>
+<body><div class="card"><h1>Installing the kiln controller&hellip;</h1>
+<p><b>${step}</b></p><p>This page refreshes itself. On a Pi Zero W the whole install takes 20&ndash;45 minutes.
+When it is done the Pi reboots and the controller appears here.</p><pre>${tail}</pre></div></body></html>
+HTML
+    mv "$STATUS_DIR/index.html.tmp" "$STATUS_DIR/index.html"
+}
+step() { echo "$*" > "$STEP_FILE"; echo; echo "=== $* ==="; render; }
+
+step "Starting"
+systemd-run --unit=kiln-install-status --quiet \
+    python3 -m http.server 8081 --directory "$STATUS_DIR" >/dev/null 2>&1 || true
+( while sleep 15; do render; done ) &
+RENDER_PID=$!
+
+fail() {
+    step "Install FAILED: $*  -  see kiln-install.log on the SD card's boot partition"
+    kill "$RENDER_PID" 2>/dev/null
+    render
+    # leave the progress page running so the error can be read
+    exit 1
+}
+
+# ---- wait for the network and a correct clock (TLS needs it)
+step "Waiting for the network"
+for _ in $(seq 1 120); do
+    getent hosts github.com >/dev/null 2>&1 && break
+    sleep 5
+done
+getent hosts github.com >/dev/null 2>&1 || fail "no internet connection. Check the Wi-Fi settings in Raspberry Pi Imager (2.4 GHz only on a Pi Zero W)."
+
+step "Waiting for the clock to sync"
+for _ in $(seq 1 36); do
+    [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ] && break
+    sleep 5
+done
+
+# ---- which user runs the controller: the one Imager created
+if [ -z "$KILN_USER" ]; then
+    KILN_USER="$(getent passwd 1000 | cut -d: -f1)"
+fi
+[ -n "$KILN_USER" ] || fail "could not find the user created by Raspberry Pi Imager"
+USER_HOME="$(getent passwd "$KILN_USER" | cut -d: -f6)"
+echo "installing for user $KILN_USER in $USER_HOME/kiln-controller"
+
+step "Installing git"
+DEBIAN_FRONTEND=noninteractive apt-get update -y || fail "apt-get update failed"
+DEBIAN_FRONTEND=noninteractive apt-get install -y git || fail "could not install git"
+
+step "Downloading the kiln controller"
+if [ ! -d "$USER_HOME/kiln-controller/.git" ]; then
+    runuser -u "$KILN_USER" -- git clone --branch "$BRANCH" "$REPO_URL" "$USER_HOME/kiln-controller" \
+        || fail "git clone of $REPO_URL failed"
+fi
+
+step "Installing (this is the long part)"
+ARGS=(--no-start)
+[ "$PROTECT_SD" = "1" ] && ARGS+=(--protect-sd)
+[ "$TAILSCALE" = "1" ] && ARGS+=(--tailscale)
+[ -f "$BOOT/kiln-settings.json" ] && ARGS+=(--settings "$BOOT/kiln-settings.json")
+KILN_USER="$KILN_USER" BRANCH="$BRANCH" REPO_URL="$REPO_URL" TAILSCALE_AUTHKEY="$TAILSCALE_AUTHKEY" \
+    bash "$USER_HOME/kiln-controller/install.sh" "${ARGS[@]}" || fail "install.sh failed"
+
+# don't leave a Tailscale key lying on the boot partition
+if [ -n "$TAILSCALE_AUTHKEY" ]; then
+    sed -i 's/^TAILSCALE_AUTHKEY=.*/TAILSCALE_AUTHKEY=/' "$BOOT/kiln-install.conf"
+fi
+
+kill "$RENDER_PID" 2>/dev/null
+if [ "$REBOOT" = "1" ]; then
+    step "Done! Rebooting. The controller will be at this address in about two minutes."
+    echo "=== kiln-controller install finished $(date) ==="
+    # reboot after cloud-init has finished cleanly
+    systemd-run --on-active=20 --quiet systemctl reboot
+else
+    step "Done! Starting the controller."
+    systemctl stop kiln-install-status 2>/dev/null
+    systemctl start kiln-controller
+    echo "=== kiln-controller install finished $(date) ==="
+fi
+exit 0

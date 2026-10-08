@@ -1,0 +1,6 @@
+# shell scripts must keep Unix line endings or the Pi cannot run them
+*.sh text eol=lf
+provision/vendor-data text eol=lf
+provision/kiln-install.conf text eol=lf
+start-on-boot text eol=lf
+ziplogs text eol=lf

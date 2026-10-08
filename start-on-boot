@@ -1,3 +1,11 @@
 #!/bin/bash
-sudo cp /home/pi/kiln-controller/lib/init/kiln-controller.service /etc/systemd/system/
-sudo systemctl enable kiln-controller
+# Installs and enables the systemd service. install.sh does this for you;
+# this script is kept for people who installed by hand.
+set -e
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+USER_NAME="${SUDO_USER:-$USER}"
+sed -e "s|@USER@|$USER_NAME|g" -e "s|@DIR@|$DIR|g" "$DIR/lib/init/kiln-controller.service" \
+    | sudo tee /etc/systemd/system/kiln-controller.service > /dev/null
+sudo systemctl daemon-reload
+sudo systemctl enable --now kiln-controller
+echo "kiln-controller service enabled and started"

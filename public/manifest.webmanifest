@@ -1,0 +1,14 @@
+{
+  "name": "Kiln Controller",
+  "short_name": "Kiln",
+  "start_url": "/picoreflow/index.html",
+  "scope": "/picoreflow/",
+  "display": "standalone",
+  "background_color": "#b9b6af",
+  "theme_color": "#3F3E3A",
+  "icons": [
+    {"src": "assets/images/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "assets/images/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "assets/images/icon.svg", "sizes": "any", "type": "image/svg+xml"}
+  ]
+}

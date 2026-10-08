@@ -1,25 +1,18 @@
-setuptools
-greenlet
-bottle
-gevent
-gevent-websocket
-websocket-client
+# Web server. On a Raspberry Pi install.sh installs gevent from apt
+# (python3-gevent) because compiling it on a Pi Zero takes hours; the venv
+# is created with --system-site-packages so pip sees it.
+bottle>=0.13
+gevent>=21.0
+
+# used by kiln-logger.py and watcher.py
 requests
 
-# for folks running raspberry pis
-# we have no proof of anyone using another board yet, but when that 
-# happens, you might want to comment this out.
-RPi.GPIO
-
-# List of all supported adafruit modules for thermocouples
+# hardware (only imported when simulate is off)
+Adafruit-Blinka
+RPi.GPIO; platform_machine in "armv6l armv7l aarch64"
+adafruit-circuitpython-busdevice
+adafruit-circuitpython-bitbangio
 adafruit-circuitpython-max31855
 adafruit-circuitpython-max31856
-
-# for folks using sw spi (bit banging)
-adafruit-circuitpython-bitbangio
-
-# untested - for PT100 platinum thermocouples
-#adafruit-circuitpython-max31865
-
-# untested - for mcp9600 and mcp9601
-#adafruit-circuitpython-mcp9600
+adafruit-circuitpython-max31865
+adafruit-circuitpython-mcp9600

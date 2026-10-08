@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Bookworm ships 3.11, Trixie 3.13
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "bottle>=0.13" gevent requests pytest pyflakes
+      - name: Lint
+        run: python -m pyflakes kiln-controller.py lib tools kiln-logger.py kiln-tuner.py
+      - name: Tests (simulator)
+        run: python -m pytest -q
+      - name: Server smoke test
+        run: |
+          timeout 20 python kiln-controller.py &
+          sleep 6
+          curl -sf http://localhost:8081/api/state
+          curl -sf http://localhost:8081/api/profiles > /dev/null
+          curl -sf http://localhost:8081/picoreflow/index.html > /dev/null
+          timeout 4 curl -sN http://localhost:8081/api/events | head -c 200 || true
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shellcheck
+        run: shellcheck -S warning install.sh start-on-boot provision/vendor-data
+      - name: JavaScript syntax
+        run: |
+          node -e "new Function(require('fs').readFileSync('public/assets/js/picoreflow.js','utf8'))"
+          node -e "new Function(require('fs').readFileSync('public/assets/js/state.js','utf8'))"
