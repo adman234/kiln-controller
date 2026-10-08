@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # gevent must patch the standard library before anything else is
-# imported so the oven threads, sleeps and websockets cooperate instead
+# imported so the oven threads, sleeps and live-status streams cooperate instead
 # of blocking each other.
 from gevent import monkey
 monkey.patch_all()
 
 import base64
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -22,8 +23,7 @@ from urllib.parse import urlparse
 import bottle
 import gevent
 from gevent.pywsgi import WSGIServer
-from geventwebsocket.handler import WebSocketHandler
-from geventwebsocket import WebSocketError
+from gevent.queue import Queue, Empty
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(script_dir, 'lib'))
@@ -35,14 +35,16 @@ logging.basicConfig(level=config.log_level, format=config.log_format)
 log = logging.getLogger("kiln-controller")
 log.info("Starting kiln controller")
 
-from settings import settings, BOARD_TC_TYPES
+from settings import settings, BOARD_TC_TYPES, SECRET_KEYS, atomic_write_json
 from units import (to_display, state_to_display, convert_profile_data,
                    from_display, delta_from_display, pidstats_to_display)
 from profiles import ProfileStore, ProfileError, Profile
 from history import RunHistory
 from oven import SimulatedOven, RealOven
 from ovenWatcher import OvenWatcher
+from notify import notifier
 import autotune
+import sdnotify
 
 app = bottle.Bottle()
 store = ProfileStore()
@@ -72,12 +74,10 @@ class ApiError(Exception):
 @app.hook('before_request')
 def check_request():
     req = bottle.request
-    # Cross-site websocket hijacking / CSRF: a web page on another site
-    # must not be able to start your kiln through your browser.
+    # CSRF: a web page on another site must not be able to start your
+    # kiln through your browser.
     origin = req.headers.get("Origin")
-    is_ws = req.environ.get("wsgi.websocket") is not None or \
-        req.headers.get("Upgrade", "").lower() == "websocket"
-    if origin and (is_ws or req.method != "GET"):
+    if origin and req.method != "GET":
         if urlparse(origin).netloc != req.headers.get("Host"):
             log.warning("rejected cross-origin request from %s" % origin)
             raise bottle.HTTPError(403, "cross-origin request rejected")
@@ -135,7 +135,7 @@ def index():
 
 @app.route('/favicon.ico')
 def favicon():
-    return bottle.HTTPResponse(status=204)
+    return bottle.static_file("icon-192.png", root=os.path.join(PUBLIC_DIR, "assets", "images"))
 
 
 @app.route('/state')
@@ -146,7 +146,8 @@ def state_page():
 @app.route('/picoreflow/<filename:path>')
 def send_static(filename):
     log.debug("serving %s" % filename)
-    resp = bottle.static_file(filename, root=PUBLIC_DIR)
+    mimetype = "application/manifest+json" if filename.endswith(".webmanifest") else True
+    resp = bottle.static_file(filename, root=PUBLIC_DIR, mimetype=mimetype)
     # html/js change between versions, make browsers re-check them
     if filename.endswith((".html", ".js", ".css")):
         resp.set_header("Cache-Control", "no-cache")
@@ -157,6 +158,19 @@ def send_static(filename):
 # helpers
 def display_state():
     return state_to_display(oven.get_state(), settings.temp_scale)
+
+
+def request_is_remote():
+    '''True when the browser is not on a private/local network, i.e. the
+    controller has been exposed to the internet'''
+    addr = bottle.request.environ.get("REMOTE_ADDR", "")
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    # 100.64.0.0/10 is carrier-grade NAT, which Tailscale uses
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip in ipaddress.ip_network("100.64.0.0/10"))
 
 
 def profile_for_display(p, summary=None):
@@ -291,6 +305,10 @@ def handle_api():
         oven.start_autotune(setpoint, output_high=output_high, hysteresis=hysteresis,
                             cycles=cycles, max_overshoot=max_overshoot)
 
+    elif cmd == 'notify_test':
+        notifier.test()
+        return {"success": True, "message": "sent"}
+
     elif cmd == 'autotune_apply':
         res = (oven.last_autotune or {}).get("result")
         if "kp" in body:
@@ -303,6 +321,10 @@ def handle_api():
             raise ApiError("ki must be > 0")
         for k in ("kp", "ki", "kd"):
             settings.set("pid_" + k, round(gains[k], 4), persist=False)
+        # with real PID values the controller can work in a wider band
+        # around the target instead of plain on/off (default 5F/2.8C)
+        if body.get("widen_window", True) and settings.pid_control_window < 10:
+            settings.set("pid_control_window", 10.0, persist=False)
         settings.set("pid_tuned_at", time.strftime("%Y-%m-%dT%H:%M:%S"))
         # takes effect on the next run (PID is created when a run starts)
         log.info("applied PID gains %s" % gains)
@@ -329,6 +351,101 @@ def handle_api():
 @api
 def api_profiles():
     return {"profiles": list_profiles_for_display(), "temp_scale": settings.temp_scale}
+
+
+@app.get('/api/profiles/export')
+def api_profiles_export():
+    '''one schedule (or all with no name) as a JSON download, in Celsius
+    so it can be shared'''
+    name = bottle.request.query.getunicode("name")
+    clean = lambda p: {k: v for k, v in p.items() if not k.startswith("_")}
+    if name:
+        p = store.find(name)
+        if p is None:
+            return bottle.HTTPError(404, "not found")
+        data, fname = clean(p), name
+    else:
+        data, fname = [clean(p) for p in store.list()], "kiln-schedules"
+    bottle.response.content_type = "application/json"
+    bottle.response.set_header("Content-Disposition", 'attachment; filename="%s.json"' %
+                               "".join(c if c.isalnum() or c in "-_ " else "_" for c in fname))
+    return json.dumps(data, indent=1)
+
+
+@app.post('/api/profiles/import')
+@api
+def api_profiles_import():
+    '''body: {"profiles": [...] or one profile, "overwrite": bool}'''
+    body = json_body()
+    items = body.get("profiles")
+    if isinstance(items, dict):
+        items = [items]
+    if not isinstance(items, list) or not items:
+        raise ApiError("no schedules in the file")
+    imported, skipped = [], []
+    for p in items[:500]:
+        if not isinstance(p, dict):
+            continue
+        p = dict(p)
+        p.setdefault("temp_units", "c")
+        if store.find(p.get("name")) and not body.get("overwrite"):
+            skipped.append(p.get("name"))
+            continue
+        store.save(p, overwrite=True)
+        imported.append(p["name"])
+    return {"success": True, "imported": imported, "skipped": skipped}
+
+
+@app.get('/api/backup')
+def api_backup():
+    '''settings, schedules and firing history in one file. Passwords and
+    tokens are left out.'''
+    overrides = {k: v for k, v in settings._overrides.items() if k not in SECRET_KEYS}
+    data = {
+        "type": "kiln-controller-backup",
+        "version": 1,
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "hostname": socket.gethostname(),
+        "settings": overrides,
+        "profiles": [{k: v for k, v in p.items() if not k.startswith("_")} for p in store.list()],
+        "history": history.records,
+    }
+    bottle.response.content_type = "application/json"
+    bottle.response.set_header("Content-Disposition", 'attachment; filename="kiln-backup-%s-%s.json"' %
+                               (socket.gethostname(), time.strftime("%Y%m%d")))
+    return json.dumps(data, indent=1)
+
+
+@app.post('/api/restore')
+@api
+def api_restore():
+    body = json_body()
+    if body.get("type") != "kiln-controller-backup":
+        raise ApiError("this is not a kiln-controller backup file")
+    if oven.state in ("RUNNING", "PAUSED", "TUNING"):
+        raise ApiError("stop the kiln before restoring")
+    restored = {"settings": 0, "profiles": 0, "history": 0}
+    vals = body.get("settings") or {}
+    if isinstance(vals, dict):
+        for k, v in vals.items():
+            if k in settings._defaults and k not in SECRET_KEYS:
+                settings.set(k, v, persist=False)
+                restored["settings"] += 1
+        settings.save()
+    for p in body.get("profiles") or []:
+        try:
+            store.save(dict(p, temp_units=p.get("temp_units", "c")), overwrite=True)
+            restored["profiles"] += 1
+        except (ProfileError, TypeError, AttributeError) as e:
+            log.error("restore: skipped a schedule: %s" % e)
+    runs = body.get("history")
+    if isinstance(runs, list):
+        with history.lock:
+            history.records = [r for r in runs if isinstance(r, dict)][-100:]
+        restored["history"] = len(history.records)
+        atomic_write_json(history.path, history.records, indent=1)
+    return {"success": True, "restored": restored,
+            "message": "Restored. Restart the controller if sensor or pin settings changed."}
 
 
 @app.post('/api/profiles')
@@ -383,6 +500,8 @@ def api_history_clear():
 @api
 def api_settings():
     return {"values": settings.to_display(), "schema": settings.schema(),
+            "remote": request_is_remote(),
+            "notifications": notifier.recent[-10:],
             "board_tc_types": BOARD_TC_TYPES,
             "autotune_rules": {k: v["label"] for k, v in autotune.RULES.items()}}
 
@@ -464,124 +583,48 @@ def api_diagnostics():
 
 
 # ---------------------------------------------------------------------
-# websockets (kept for the UI's live status and older scripts)
-def get_websocket_from_request():
-    env = bottle.request.environ
-    wsock = env.get('wsgi.websocket')
-    if not wsock:
-        bottle.abort(400, 'Expected WebSocket request.')
-    return wsock
+# live status: Server-Sent Events. One way (server -> browser) is all the
+# UI needs, it works through any proxy and needs no extra library.
+@app.get('/api/events')
+def api_events():
+    q = Queue(maxsize=50)
+    ovenWatcher.add_listener(q)
+    bottle.response.content_type = "text/event-stream"
+    bottle.response.set_header("Cache-Control", "no-cache")
+    bottle.response.set_header("X-Accel-Buffering", "no")
+    log.info("status stream opened (%d listeners)" % len(ovenWatcher.listeners))
 
-
-@app.route('/control')
-def handle_control():
-    wsock = get_websocket_from_request()
-    log.info("websocket (control) opened")
-    while True:
+    def stream():
         try:
-            message = wsock.receive()
-            if message is None:
-                break
-            log.info("Received (control): %s" % message)
-            try:
-                msgdict = json.loads(message)
-            except ValueError:
-                continue
-            if msgdict.get("cmd") == "RUN":
-                log.info("RUN command received")
-                profile_obj = msgdict.get('profile') or {}
-                name = profile_obj.get("name") if isinstance(profile_obj, dict) else profile_obj
+            yield "retry: 3000\n\n"
+            while True:
                 try:
-                    start_run(name, msgdict.get("startat", 0))
-                except (ApiError, ProfileError, RuntimeError) as e:
-                    wsock.send(json.dumps({"error": getattr(e, "msg", str(e))}))
-            elif msgdict.get("cmd") == "STOP":
-                log.info("Stop command received")
-                oven.abort_run()
-        except WebSocketError as e:
-            log.error(e)
-            break
-    log.info("websocket (control) closed")
-
-
-@app.route('/storage')
-def handle_storage():
-    '''legacy profile storage socket, the UI now uses /api/profiles'''
-    wsock = get_websocket_from_request()
-    log.info("websocket (storage) opened")
-    while True:
-        try:
-            message = wsock.receive()
-            if not message:
-                break
-            try:
-                msgdict = json.loads(message)
-            except ValueError:
-                msgdict = {}
-            if message == "GET":
-                wsock.send(json.dumps(list_profiles_for_display()))
-            elif msgdict.get("cmd") == "DELETE":
-                try:
-                    store.delete(msgdict.get('profile', {}).get("name"))
-                    msgdict["resp"] = "OK"
-                except ProfileError as e:
-                    msgdict["resp"] = "FAIL"
-                    msgdict["error"] = str(e)
-                wsock.send(json.dumps(msgdict))
-            elif msgdict.get("cmd") == "PUT":
-                profile_obj = msgdict.get('profile') or {}
-                profile_obj.setdefault("temp_units", settings.temp_scale)
-                try:
-                    store.save(profile_obj)
-                    msgdict["resp"] = "OK"
-                except ProfileError as e:
-                    msgdict["resp"] = "FAIL"
-                    msgdict["error"] = str(e)
-                wsock.send(json.dumps(msgdict))
-                wsock.send(json.dumps(list_profiles_for_display()))
-        except WebSocketError:
-            break
-    log.info("websocket (storage) closed")
+                    msg = q.get(timeout=15)
+                except Empty:
+                    yield ": keepalive\n\n"
+                    continue
+                if msg is None:
+                    break
+                yield "data: %s\n\n" % msg
+        finally:
+            ovenWatcher.remove_listener(q)
+            log.info("status stream closed")
+    return stream()
 
 
 def get_config():
-    return json.dumps({"temp_scale": settings.temp_scale,
-                       "time_scale_slope": settings.time_scale_slope,
-                       "time_scale_profile": settings.time_scale_profile,
-                       "kwh_rate": settings.kwh_rate,
-                       "kw_elements": settings.kw_elements,
-                       "currency_type": settings.currency_type})
+    return {"temp_scale": settings.temp_scale,
+            "time_scale_slope": settings.time_scale_slope,
+            "time_scale_profile": settings.time_scale_profile,
+            "kwh_rate": settings.kwh_rate,
+            "kw_elements": settings.kw_elements,
+            "currency_type": settings.currency_type}
 
 
-@app.route('/config')
-def handle_config():
-    wsock = get_websocket_from_request()
-    log.info("websocket (config) opened")
-    while True:
-        try:
-            message = wsock.receive()
-            if message is None:
-                break
-            wsock.send(get_config())
-        except WebSocketError:
-            break
-    log.info("websocket (config) closed")
-
-
-@app.route('/status')
-def handle_status():
-    wsock = get_websocket_from_request()
-    ovenWatcher.add_observer(wsock)
-    log.info("websocket (status) opened")
-    while True:
-        try:
-            message = wsock.receive()
-            if message is None:
-                break
-        except WebSocketError:
-            break
-    ovenWatcher.remove_observer(wsock)
-    log.info("websocket (status) closed")
+@app.get('/api/config')
+@api
+def api_config():
+    return get_config()
 
 
 def shutdown(*_):
@@ -601,7 +644,11 @@ def main():
     gevent.signal_handler(signal.SIGTERM, shutdown)
     gevent.signal_handler(signal.SIGINT, shutdown)
     log.info("listening on %s:%d" % (ip, port))
-    server = WSGIServer((ip, port), app, handler_class=WebSocketHandler, log=None)
+    server = WSGIServer((ip, port), app, log=None)
+    server.start()
+    # tell systemd we are up (Type=notify); the oven loop then keeps the
+    # watchdog fed
+    sdnotify.ready()
     server.serve_forever()
 
 

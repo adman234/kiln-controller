@@ -2,11 +2,20 @@
 # /etc/systemd/system/kiln-controller.service
 [Unit]
 Description=Kiln controller
-After=network-online.target
+After=network-online.target time-sync.target
 Wants=network-online.target
+# if the service keeps crashing, stop retrying after a while (the relay
+# is forced off each time) instead of looping forever
+StartLimitIntervalSec=600
+StartLimitBurst=10
 
 [Service]
-Type=simple
+# Type=notify + WatchdogSec: the control loop reports every cycle. If it
+# hangs, systemd kills the service, ExecStopPost forces the relay off and
+# Restart= starts it again.
+Type=notify
+NotifyAccess=main
+WatchdogSec=90
 User=@USER@
 Group=@USER@
 WorkingDirectory=@DIR@
@@ -17,6 +26,7 @@ ExecStart=@DIR@/venv/bin/python @DIR@/kiln-controller.py
 ExecStopPost=-@DIR@/venv/bin/python @DIR@/tools/relay-off.py
 Restart=always
 RestartSec=5
+TimeoutStartSec=120
 # the control loop matters more than anything else on this little computer
 Nice=-5
 # hardening that does not get in the way of GPIO/SPI access

@@ -98,6 +98,32 @@ SCHEMA = [
     ("Hardware", "sensor_time_wait", "float", "Control cycle (seconds)",
         {"min": 1, "max": 30, "restart": True, "help": "Use 10-30s for mechanical relays/contactors."}),
 
+    ("Safety", "runaway_detect", "bool", "Detect a relay stuck on",
+        {"help": "Alarm and open the safety contactor if the kiln keeps heating while the elements are off."}),
+    ("Safety", "runaway_minutes", "int", "Stuck relay: watch window (minutes)", {"min": 3, "max": 60}),
+    ("Safety", "runaway_rise", "delta", "Stuck relay: rise that triggers the alarm", {"min": 2, "max": 200}),
+    ("Safety", "stall_detect", "bool", "Detect no heating at full power",
+        {"help": "Stop the firing if the kiln does not warm up with the elements fully on: thermocouple out of the kiln, failed element or relay, or the kiln at its limit."}),
+    ("Safety", "stall_minutes", "int", "No heating: watch window (minutes)", {"min": 5, "max": 240}),
+    ("Safety", "stall_rise", "delta", "No heating: minimum rise expected", {"min": 0.5, "max": 100}),
+    ("Safety", "behind_schedule_minutes", "int", "Alert when behind schedule for (minutes)", {"min": 5, "max": 600}),
+    ("Safety", "gpio_contactor", "int", "Safety contactor output pin (BCM, -1 = none)",
+        {"min": -1, "max": 27, "restart": True,
+         "help": "Drives a contactor in series with the SSR. Closed only while firing, opened on any emergency. See docs/safety.md."}),
+    ("Safety", "gpio_contactor_invert", "bool", "Invert contactor output", {"restart": True}),
+    ("Safety", "gpio_heartbeat", "int", "Heartbeat output pin for external watchdog (BCM, -1 = none)",
+        {"min": -1, "max": 27, "restart": True,
+         "help": "Toggles every control cycle. An external watchdog relay can drop power if it stops."}),
+
+    ("Notifications", "notify_service", "choice", "Send alerts with",
+        {"options": [["none", "Nothing"], ["ntfy", "ntfy (free phone app)"], ["pushover", "Pushover"],
+                     ["webhook", "Webhook (Slack, Discord, Home Assistant...)"]]}),
+    ("Notifications", "notify_url", "str", "ntfy topic URL or webhook URL",
+        {"maxlen": 300, "help": "ntfy: https://ntfy.sh/<a long random topic name>, subscribe to the same topic in the ntfy app."}),
+    ("Notifications", "pushover_user", "str", "Pushover user key", {"maxlen": 64}),
+    ("Notifications", "pushover_token", "password", "Pushover app token", {}),
+    ("Notifications", "notify_on_complete", "bool", "Also notify when a firing finishes or starts", {}),
+
     ("Errors", "ignore_temp_too_high", "bool", "Ignore emergency temperature", {}),
     ("Errors", "ignore_tc_lost_connection", "bool", "Ignore: thermocouple not connected", {}),
     ("Errors", "ignore_tc_short_errors", "bool", "Ignore: short circuit", {}),
@@ -228,6 +254,23 @@ def defaults_from_config(cfg=config):
         "simulate": bool(g("simulate", True)),
         "sim_speedup_factor": int(g("sim_speedup_factor", 1)),
         "web_password": str(g("web_password", "")),
+
+        "runaway_detect": bool(g("runaway_detect", True)),
+        "runaway_minutes": int(g("runaway_minutes", 10)),
+        "runaway_rise": delta("runaway_rise", 15.0),
+        "stall_detect": bool(g("stall_detect", True)),
+        "stall_minutes": int(g("stall_minutes", 30)),
+        "stall_rise": delta("stall_rise", 5.0),
+        "behind_schedule_minutes": int(g("behind_schedule_minutes", 60)),
+        "gpio_contactor": _pin_number(g("gpio_contactor", None), -1),
+        "gpio_contactor_invert": bool(g("gpio_contactor_invert", False)),
+        "gpio_heartbeat": _pin_number(g("gpio_heartbeat", None), -1),
+
+        "notify_service": str(g("notify_service", "none")),
+        "notify_url": str(g("notify_url", "")),
+        "pushover_user": str(g("pushover_user", "")),
+        "pushover_token": str(g("pushover_token", "")),
+        "notify_on_complete": bool(g("notify_on_complete", True)),
     }
     for (_, key, kind, _, _) in SCHEMA:
         if key.startswith("ignore_"):
@@ -300,9 +343,9 @@ class Settings(object):
             elif kind == "delta":
                 v = round(delta_to_display(v, scale), 2)
             elif kind == "password":
+                out[key + "_set"] = bool(v)
                 v = ""
             out[key] = v
-        out["web_password_set"] = bool(self._values.get("web_password"))
         out["pid_tuned_at"] = self._values.get("pid_tuned_at")
         return out
 
@@ -358,6 +401,9 @@ class Settings(object):
         return changed, restart, errors
 
 
+SECRET_KEYS = [s[1] for s in SCHEMA if s[2] == "password"]
+
+
 def coerce(kind, raw, extra):
     if kind == "bool":
         if isinstance(raw, str):
@@ -369,7 +415,7 @@ def coerce(kind, raw, extra):
         return str(raw)
     if kind == "str":
         v = str(raw).strip()
-        if len(v) > 32:
+        if len(v) > extra.get("maxlen", 32):
             raise ValueError("too long")
         return v
     if kind == "choice":

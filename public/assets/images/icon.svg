@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#3F3E3A"/>
+  <!-- kiln body -->
+  <rect x="116" y="150" width="280" height="250" rx="22" fill="#b9b6af"/>
+  <rect x="146" y="186" width="220" height="180" rx="12" fill="#1F1E1A"/>
+  <!-- glow inside the kiln -->
+  <path d="M256 214c30 34 48 58 48 88a48 48 0 0 1-96 0c0-18 8-34 20-48 2 16 10 26 22 30-8-26-4-48 6-70z" fill="#f2994a"/>
+  <path d="M256 282c12 12 18 22 18 32a18 18 0 0 1-36 0c0-10 6-20 18-32z" fill="#ffd27a"/>
+  <!-- lid and feet -->
+  <rect x="100" y="126" width="312" height="34" rx="12" fill="#d8d3c5"/>
+  <rect x="140" y="400" width="34" height="34" rx="6" fill="#b9b6af"/>
+  <rect x="338" y="400" width="34" height="34" rx="6" fill="#b9b6af"/>
+  <!-- olive accent: the controller -->
+  <rect x="330" y="88" width="66" height="30" rx="8" fill="#75890c"/>
+</svg>

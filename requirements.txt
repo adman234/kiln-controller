@@ -3,10 +3,8 @@
 # is created with --system-site-packages so pip sees it.
 bottle>=0.13
 gevent>=21.0
-gevent-websocket>=0.10.1
 
 # used by kiln-logger.py and watcher.py
-websocket-client
 requests
 
 # hardware (only imported when simulate is off)

@@ -15,8 +15,9 @@ var lastStatus = null;
 var editor = { active: false, original_name: null };
 var shownAutotune = null;
 var diagTimer = null;
-var ws_status = null;
-var wsRetry = 0;
+var events = null;
+var connLost = false;
+var drag = null;
 
 graph.profile = {
     label: "Profile",
@@ -45,12 +46,14 @@ function esc(s) {
 
 function deg() { return "&deg;" + cfg.temp_scale.toUpperCase(); }
 
+// small toast messages; msg is HTML (callers escape user content)
 function notify(msg, type, delay) {
-    $.bootstrapGrowl(msg, {
-        ele: 'body', type: type || 'info',
-        offset: { from: 'top', amount: 70 }, align: 'center', width: 385,
-        delay: delay === undefined ? 5000 : delay, allow_dismiss: true, stackup_spacing: 10
-    });
+    var $t = $('<div class="alert alert-' + (type || 'info') + ' alert-dismissible" role="alert">' +
+               '<button type="button" class="close" aria-label="Close"><span>&times;</span></button>' + msg + '</div>');
+    $t.find('.close').on('click', function () { $t.remove(); });
+    $('#toasts').append($t);
+    if ($('#toasts .alert').length > 4) $('#toasts .alert').first().remove();
+    if (delay !== 0) setTimeout(function () { $t.fadeOut(300, function () { $t.remove(); }); }, delay || 5000);
 }
 
 function apiErrorText(xhr) {
@@ -115,18 +118,18 @@ function loadProfiles(selectName) {
 }
 
 function fillProfileSelect() {
-    $('#e2').find('option').remove().end();
+    $('#profile_select').empty();
     var names = profiles.map(function (a) { return a.name; });
     if (names.length > 0 && $.inArray(selected_profile_name, names) === -1) {
         selected_profile = 0;
         selected_profile_name = names[0];
     }
     for (var i = 0; i < profiles.length; i++) {
-        $('#e2').append('<option value="' + i + '">' + esc(profiles[i].name) + '</option>');
+        $('#profile_select').append('<option value="' + i + '">' + esc(profiles[i].name) + '</option>');
     }
     for (i = 0; i < profiles.length; i++) {
         if (profiles[i].name == selected_profile_name) {
-            $('#e2').select2('val', i);
+            $('#profile_select').val(i);
             updateProfile(i);
         }
     }
@@ -168,6 +171,53 @@ function estimateText(est) {
 function replot() {
     var series = [graph.profile, graph.live];
     graph.plot = $.plot("#graph_container", series, getOptions());
+}
+
+// Drag schedule points on the graph while editing. Pointer events work
+// for mouse, pen and touch. Points cannot be dragged past their
+// neighbours in time.
+function bindGraphDrag() {
+    var $g = $('#graph_container');
+    function canvasPos(e) {
+        var off = graph.plot.offset();
+        return { x: e.pageX - off.left, y: e.pageY - off.top };
+    }
+    $g.on('pointerdown', function (ev) {
+        if (!editor.active || !graph.plot) return;
+        var e = ev.originalEvent, pos = canvasPos(e);
+        var ax = graph.plot.getAxes(), d = graph.profile.data, best = -1, bestDist = 30;
+        for (var i = 0; i < d.length; i++) {
+            var dx = ax.xaxis.p2c(d[i][0]) - pos.x, dy = ax.yaxis.p2c(d[i][1]) - pos.y;
+            var dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < bestDist) { bestDist = dist; best = i; }
+        }
+        if (best < 0) return;
+        drag = { i: best, xmax: ax.xaxis.max, ymax: ax.yaxis.max };
+        try { this.setPointerCapture(e.pointerId); } catch (err) {}
+        ev.preventDefault();
+    }).on('pointermove', function (ev) {
+        if (!drag) return;
+        var e = ev.originalEvent, pos = canvasPos(e), ax = graph.plot.getAxes(), d = graph.profile.data;
+        var t = Math.round(ax.xaxis.c2p(pos.x) / 60) * 60;
+        var temp = Math.round(ax.yaxis.c2p(pos.y));
+        var lo = drag.i > 0 ? d[drag.i - 1][0] + 60 : 0;
+        var hi = drag.i < d.length - 1 ? d[drag.i + 1][0] - 60 : Infinity;
+        if (drag.i == 0) t = 0;
+        d[drag.i] = [Math.max(lo, Math.min(hi, t)), Math.max(0, temp)];
+        if (!drag.pending) {
+            drag.pending = true;
+            window.requestAnimationFrame(function () {
+                if (drag) drag.pending = false;
+                replot();
+            });
+        }
+        ev.preventDefault();
+    }).on('pointerup pointercancel', function () {
+        if (!drag) return;
+        drag = null;
+        replot();
+        updateProfileTable();
+    });
 }
 
 function niceTick(span) {
@@ -341,6 +391,7 @@ function renderLibrary() {
         html += '<td class="text-nowrap">' +
             '<button class="btn btn-default btn-xs lib-edit" data-i="' + i + '" title="Edit"><span class="glyphicon glyphicon-edit"></span></button> ' +
             '<button class="btn btn-default btn-xs lib-copy" data-i="' + i + '" title="Duplicate"><span class="glyphicon glyphicon-file"></span></button> ' +
+            '<a class="btn btn-default btn-xs" href="/api/profiles/export?name=' + encodeURIComponent(p.name) + '" download title="Download as a file"><span class="glyphicon glyphicon-export"></span></a> ' +
             '<button class="btn btn-danger btn-xs lib-delete" data-i="' + i + '" title="Delete"><span class="glyphicon glyphicon-trash"></span></button>' +
             '</td></tr>';
     });
@@ -350,7 +401,7 @@ function renderLibrary() {
 }
 
 function selectProfileByIndex(i) {
-    $('#e2').select2('val', i);
+    $('#profile_select').val(i);
     updateProfile(i);
 }
 
@@ -397,7 +448,7 @@ function setEditUI(on) {
         $('#profile_table').slideUp();
     }
     graph.profile.points.show = on;
-    graph.profile.draggable = on;
+    $('#graph_container').toggleClass('editing', on);
 }
 
 function enterNewMode() {
@@ -635,6 +686,7 @@ function openSettings(tab) {
     apiGet("/api/settings").done(function (resp) {
         settingsData = resp;
         renderSettings();
+        renderRecentAlerts(resp.notifications);
         renderAutotune(lastStatus ? lastStatus.autotune : null);
         loadHistory();
         $('#restart_banner').hide();
@@ -664,7 +716,7 @@ function renderField(item, value) {
         html += '</select>';
     } else if (item.kind == "password") {
         html += '<input type="password" id="' + id + '" class="form-control input-sm" autocomplete="new-password" placeholder="' +
-                (settingsData.values.web_password_set ? "(set - leave blank to keep, type a space to remove)" : "(none)") + '">';
+                (settingsData.values[item.key + "_set"] ? "(set - leave blank to keep, type a space to remove)" : "(none)") + '">';
     } else if (item.kind == "str") {
         html += '<input type="text" id="' + id + '" class="form-control input-sm" value="' + esc(value) + '">';
     } else {
@@ -690,7 +742,7 @@ function renderSettings() {
         $(this).html(html + '</div>');
     });
     $('#pid_tuned_at').text(v.pid_tuned_at ? "Last autotuned " + fmtDate(v.pid_tuned_at) : "PID values have not been autotuned yet.");
-    $('#set_sensor_board, #set_spi_mode').on('change', updateSettingsVisibility);
+    $('#set_sensor_board, #set_spi_mode, #set_notify_service').on('change', updateSettingsVisibility);
     updateSettingsVisibility();
 
     $('.at-unit').html(deg());
@@ -701,6 +753,11 @@ function renderSettings() {
 function showRow(key, on) { $('.setting-row[data-key=' + key + ']').toggle(on); }
 
 function updateSettingsVisibility() {
+    var svc = $('#set_notify_service').val();
+    showRow("notify_url", svc == "ntfy" || svc == "webhook");
+    showRow("pushover_user", svc == "pushover");
+    showRow("pushover_token", svc == "pushover");
+    showRow("notify_on_complete", svc != "none");
     var board = $('#set_sensor_board').val();
     var spi = $('#set_spi_mode').val();
     var types = settingsData.board_tc_types[board] || [];
@@ -792,6 +849,79 @@ function clearHistory() {
     });
 }
 
+function showRemoteWarning(resp) {
+    if (resp.remote && !resp.values.web_password_set) {
+        $('#remote_bar').html('<span class="glyphicon glyphicon-warning-sign"></span> <b>This kiln is reachable from the internet without a password.</b> ' +
+            'Anyone could start it. Set a password in Settings &rarr; Advanced, and use Tailscale or Raspberry Pi Connect instead of port forwarding (see docs/remote-access.md).').show();
+    } else {
+        $('#remote_bar').hide();
+    }
+}
+
+function renderRecentAlerts(list) {
+    if (!list || !list.length) { $('#recent_alerts').html('<span class="text-muted">None since the controller started.</span>'); return; }
+    var html = '<table class="table table-condensed">';
+    $.each(list.slice().reverse(), function (_, n) {
+        html += '<tr' + (n.urgent ? ' class="danger"' : '') + '><td class="text-nowrap">' + new Date(n.time * 1000).toLocaleString() +
+                '</td><td><b>' + esc(n.title) + '</b><br>' + esc(n.message) + '</td></tr>';
+    });
+    $('#recent_alerts').html(html + '</table>');
+}
+
+function testNotification() {
+    var values = collectSettings();
+    var send = function () {
+        apiPost("/api", { cmd: "notify_test" })
+            .done(function () { notify("Test alert sent. Check your phone.", "success"); })
+            .fail(fail("Test alert failed"));
+    };
+    if ($.isEmptyObject(values)) { send(); return; }
+    apiPost("/api/settings", { values: values }).done(function (resp) {
+        settingsData.values = resp.values;
+        send();
+    }).fail(fail("Could not save settings"));
+}
+
+function readJsonFile(input, fn) {
+    var file = input.files && input.files[0];
+    input.value = "";
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+        var data;
+        try { data = JSON.parse(reader.result); }
+        catch (e) { notify("That file is not valid JSON.", "danger"); return; }
+        fn(data, file.name);
+    };
+    reader.readAsText(file);
+}
+
+function importSchedules(data, overwrite) {
+    var list = Array.isArray(data) ? data : (data.type == "kiln-controller-backup" ? data.profiles : [data]);
+    apiPost("/api/profiles/import", { profiles: list, overwrite: !!overwrite }).done(function (resp) {
+        if (resp.skipped.length && !overwrite) {
+            confirmAction("Replace existing schedules?", "These already exist: <b>" + resp.skipped.map(esc).join(", ") +
+                          "</b>. Replace them with the imported versions?", "Replace", function () {
+                importSchedules(list.filter(function (p) { return resp.skipped.indexOf(p.name) >= 0; }), true);
+            });
+        }
+        if (resp.imported.length) notify("Imported " + resp.imported.length + " schedule(s).", "success");
+        loadProfiles();
+    }).fail(fail("Import failed"));
+}
+
+function restoreBackup(data) {
+    if (data.type != "kiln-controller-backup") { notify("That is not a kiln-controller backup file.", "danger"); return; }
+    confirmAction("Restore backup?", "Settings, schedules and firing history from <b>" + esc(data.hostname || "?") + "</b> (" +
+                  esc(data.created || "") + ") will replace what is here. Passwords are not changed.", "Restore", function () {
+        apiPost("/api/restore", data).done(function (resp) {
+            notify(esc(resp.message), "success", 8000);
+            $('#restart_banner').show();
+            loadConfig(); loadProfiles(); loadHistory();
+        }).fail(fail("Restore failed"));
+    });
+}
+
 // ---------------------------------------------------------------------
 // autotune
 
@@ -834,7 +964,7 @@ function renderAutotune(a) {
 }
 
 function applyAutotune(rule) {
-    apiPost("/api", { cmd: "autotune_apply", rule: rule }).done(function (resp) {
+    apiPost("/api", { cmd: "autotune_apply", rule: rule, widen_window: $('#at_widen').length ? $('#at_widen').is(':checked') : true }).done(function (resp) {
         notify("PID values saved. They are used from the next firing.", "success");
         $('#autotuneModal').modal('hide');
         apiPost("/api", { cmd: "autotune_dismiss" });
@@ -904,8 +1034,8 @@ function loadConfig() {
         cfg.kwh_rate = v.kwh_rate;
         cfg.kw_elements = v.kw_elements;
         cfg.currency_type = v.currency_type;
-        $('#act_temp_scale, #target_temp_scale').html(deg());
-        $('#heat_rate_temp_scale').html(deg());
+        $('.deg-unit').html(deg());
+        showRemoteWarning(resp);
         $('#heat_rate_title').text("Heat Rate /" + rateUnit());
         $('#unit_toggle button').removeClass('active btn-primary').addClass('btn-default');
         $('#unit_toggle button[data-unit=' + cfg.temp_scale + ']').addClass('active btn-primary').removeClass('btn-default');
@@ -928,7 +1058,7 @@ function handleBacklog(x) {
     if (x.profile) {
         selected_profile_name = x.profile.name;
         var i = profileIndex(x.profile.name);
-        if (i >= 0) $('#e2').select2('val', i);
+        if (i >= 0) $('#profile_select').val(i);
         graph.profile.data = x.profile.data;
     }
     graph.live.data = $.map(x.log, function (v) { return [[v.runtime, v.temperature]]; });
@@ -1028,7 +1158,7 @@ function handleStatus(x) {
     if (heat_rate > 9999) heat_rate = 9999;
     if (heat_rate < -9999) heat_rate = -9999;
     $('#heat_rate').html(isNaN(heat_rate) ? "---" : heat_rate);
-    $('#heat').html('<div class="bar" style="height:' + (x.output || 0) * 70 + '%;"></div>');
+    $('#heat').html('<div class="bar" style="height:' + Math.round((x.output || 0) * 100) + '%;"></div>');
     if (x.temperature > hazardTemp()) $('#hazard').addClass("ds-led-hazard-active");
     else $('#hazard').removeClass("ds-led-hazard-active");
 
@@ -1036,19 +1166,17 @@ function handleStatus(x) {
 }
 
 function connectStatus() {
-    var protocol = window.location.protocol == 'https:' ? 'wss:' : 'ws:';
-    var host = protocol + "//" + window.location.host;
-    ws_status = new WebSocket(host + "/status");
-    ws_status.onopen = function () {
-        if (wsRetry > 0) { notify("Reconnected", "success", 2000); loadProfiles(); }
-        wsRetry = 0;
+    // Server-Sent Events: the browser reconnects by itself
+    events = new EventSource("/api/events");
+    events.onopen = function () {
+        if (connLost) { notify("Reconnected", "success", 2000); loadProfiles(); }
+        connLost = false;
     };
-    ws_status.onclose = function () {
-        if (wsRetry == 0) notify("<b>Lost connection to the kiln controller.</b><br>Retrying&hellip;", "danger", 8000);
-        wsRetry += 1;
-        setTimeout(connectStatus, Math.min(30000, 2000 * wsRetry));
+    events.onerror = function () {
+        if (!connLost) notify("<b>Lost connection to the kiln controller.</b><br>Retrying&hellip;", "danger", 8000);
+        connLost = true;
     };
-    ws_status.onmessage = function (e) { handleStatus(JSON.parse(e.data)); };
+    events.onmessage = function (e) { handleStatus(JSON.parse(e.data)); };
 }
 
 $(document).ready(function () {
@@ -1057,8 +1185,8 @@ $(document).ready(function () {
         return;
     }
 
-    $("#e2").select2({ placeholder: "Select Profile", allowClear: false, minimumResultsForSearch: 8 });
-    $("#e2").on("change", function (e) { updateProfile(e.val); });
+    $("#profile_select").on("change", function () { updateProfile($(this).val()); });
+    bindGraphDrag();
 
     $('#unit_toggle button').on('click', function () { setUnits($(this).data('unit')); });
     $('input[name=start_when], #start_delay_h, #start_delay_m, #start_at_time').on('change keyup click', updateStartWhen);
@@ -1069,6 +1197,8 @@ $(document).ready(function () {
     });
 
     $('#library_search').on('keyup search', renderLibrary);
+    $('#import_file').on('change', function () { readJsonFile(this, function (d) { importSchedules(d, false); }); });
+    $('#restore_file').on('change', function () { readJsonFile(this, restoreBackup); });
     $('#library_table').on('click', 'th.sortable', function () {
         var k = $(this).data('key');
         librarySort.dir = librarySort.key == k ? -librarySort.dir : 1;

@@ -22,7 +22,7 @@ class OvenWatcher(threading.Thread):
         self.log_counter = 0
         self.started = None
         self.recording = False
-        self.observers = []
+        self.listeners = []
         self.lock = threading.Lock()
         threading.Thread.__init__(self)
         self.daemon = True
@@ -86,27 +86,24 @@ class OvenWatcher(threading.Thread):
                     for (r, t, tg) in self.lastlog_subset()],
         }
 
-    def add_observer(self, observer):
-        try:
-            observer.send(json.dumps(self.backlog()))
-        except Exception:
-            log.error("Could not send backlog to new observer")
+    def add_listener(self, q):
+        '''q: a queue that receives JSON strings (Server-Sent Events)'''
+        q.put_nowait(json.dumps(self.backlog()))
         with self.lock:
-            self.observers.append(observer)
+            self.listeners.append(q)
 
-    def remove_observer(self, observer):
+    def remove_listener(self, q):
         with self.lock:
-            if observer in self.observers:
-                self.observers.remove(observer)
+            if q in self.listeners:
+                self.listeners.remove(q)
 
     def notify_all(self, message):
         message_json = json.dumps(state_to_display(message, settings.temp_scale))
         with self.lock:
-            observers = list(self.observers)
-        log.debug("sending to %d clients: %s" % (len(observers), message_json))
-        for wsock in observers:
+            listeners = list(self.listeners)
+        for q in listeners:
             try:
-                wsock.send(message_json)
+                q.put_nowait(message_json)
             except Exception:
-                log.debug("could not write to socket %s" % wsock)
-                self.remove_observer(wsock)
+                # a client that stopped reading; drop it
+                self.remove_listener(q)

@@ -3,6 +3,11 @@ Kiln Controller
 
 Turns a Raspberry Pi into an inexpensive, web-enabled kiln controller.
 
+> This is a modernized fork of [jbruce12000/kiln-controller](https://github.com/jbruce12000/kiln-controller):
+> safety features, settings and PID autotune in the web UI, zero-touch install,
+> phone-friendly UI and many fixes. See **[CHANGES.md](CHANGES.md)** for everything
+> that changed and **[docs/install.md](docs/install.md)** to install.
+
 ## Features
 
   * supports [many boards](https://github.com/jbruce12000/kiln-controller/blob/main/docs/supported-boards.md) into addition to raspberry pi
@@ -16,6 +21,11 @@ Turns a Raspberry Pi into an inexpensive, web-enabled kiln controller.
   * schedule editor with ramp rates, holds, minutes/hours/h:mm and a quick "ramp to, hold" builder
   * delayed start ("start in 6 hours" / "start at 5:00 am") from the web UI
   * optional password, protection against other web pages controlling your kiln
+  * safety: stuck relay and no-heat detection, safety contactor and watchdog outputs, systemd and hardware watchdogs ([docs/safety.md](docs/safety.md))
+  * phone alerts via ntfy, Pushover or webhooks (Slack, Discord, Home Assistant)
+  * backup and restore, schedule import/export
+  * works well on a phone, add it to your home screen
+  * zero-touch install: flash with Raspberry Pi Imager, copy one file to the SD card, power on
   * easy to create new kiln schedules and edit / modify existing schedules
   * no limit to runtime - fire for days if you want
   * view status from multiple devices at once - computer, tablet etc
@@ -29,7 +39,6 @@ Turns a Raspberry Pi into an inexpensive, web-enabled kiln controller.
   * support for skipping first part of profile to match current kiln temperature
   * prevents integral wind-up when temperatures not near the set point
   * automatic restarts if there is a power outage or other event
-  * support for a watcher to page you via slack if you kiln is out of whack
   * easy scheduling of future kiln runs
 
 
@@ -72,11 +81,11 @@ My controller plugs into the wall, and the kiln plugs into the controller.
 
 ### Raspberry Pi install
 
-See **[docs/install.md](docs/install.md)**: flash *Raspberry Pi OS Lite* with
-Raspberry Pi Imager (set hostname, user, Wi-Fi and SSH there), then run one
-command on the Pi:
+See **[docs/install.md](docs/install.md)**. In short:
 
-    curl -sSL https://raw.githubusercontent.com/adman234/kiln-controller/main/install.sh | bash
+1. Flash *Raspberry Pi OS Lite* with Raspberry Pi Imager and set hostname, user and Wi-Fi in its customisation step.
+2. **Zero-touch:** copy [`provision/vendor-data`](provision/vendor-data) onto the SD card's `bootfs` drive, put the card in the Pi and power it on. Watch the progress at `http://kiln.local:8081`.
+3. **Or manually**, over SSH: `curl -sSL https://raw.githubusercontent.com/adman234/kiln-controller/main/install.sh | bash -s -- --protect-sd`
 
 Works on everything from the original Pi Zero W (use the 32-bit image) up.
 
@@ -86,7 +95,7 @@ Works on everything from the original Pi Zero W (use the 32-bit image) up.
     $ cd kiln-controller
     $ python3 -m venv venv
     $ source venv/bin/activate
-    $ pip install bottle gevent gevent-websocket pytest
+    $ pip install bottle gevent requests pytest
     $ ./kiln-controller.py          # simulate = True by default
     $ python -m pytest              # run the tests
 
@@ -156,9 +165,13 @@ In config.py, set **simulate=True**. Start the server and select a profile and c
 
 Click **Start** and choose *Start in ...* or *Start at ...*. The delayed start is kept by the controller (you can close your browser) and survives a reboot. You can also use the API, see [examples](docs/schedule.md).
 
-### Watcher
+### Alerts
 
-If you're busy and do not want to sit around watching the web interface for problems, there is a watcher.py script which you can run on any machine in your local network or even on the raspberry pi which will watch the kiln-controller process to make sure it is running a schedule, and staying within a pre-defined temperature range. When things go bad, it sends messages to a slack channel you define. I have alerts set on my android phone for that specific slack channel. Here are detailed [instructions](https://github.com/jbruce12000/kiln-controller/blob/main/docs/watcher.md).
+Phone alerts are built in: *Settings &rarr; Safety &amp; Alerts*. The older stand-alone [watcher.py](docs/watcher.md) (Slack) still works if you want a second, independent check from another computer.
+
+### Logging firings to CSV
+
+    $ ./kiln-logger.py --hostname kiln.local:8081 --csvfile firing.csv --pidstats
 
 ## License
 

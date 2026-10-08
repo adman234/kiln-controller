@@ -29,6 +29,14 @@ resume a paused run
 
 ## New endpoints
 
+The old websockets (`/control`, `/storage`, `/config`, `/status`) have been
+removed. Live status is a Server-Sent Events stream:
+
+    curl -N http://0.0.0.0:8081/api/events
+
+Each `data:` line is a JSON state; the first one is a `backlog` with the
+current profile and log.
+
 Temperatures in requests and responses are in the display unit chosen in
 Settings (`temp_scale`), unless noted. If a web password is set, add
 `-u any:yourpassword` to the curl commands.
@@ -84,3 +92,17 @@ pulse the relay (idle only, max 10s) / restart the service
 
     curl -d '{"cmd":"relay_test", "seconds": 2}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api
     curl -d '{"cmd":"restart"}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api
+
+send a test alert with the configured notification service
+
+    curl -d '{"cmd":"notify_test"}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api
+
+backup (settings without secrets, schedules, history) and restore
+
+    curl -o kiln-backup.json http://0.0.0.0:8081/api/backup
+    curl -d @kiln-backup.json -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api/restore
+
+download schedules (one, or all without a name) and import them
+
+    curl -o bisque.json 'http://0.0.0.0:8081/api/profiles/export?name=cone-05-long-bisque'
+    curl -d '{"profiles": [ ... ], "overwrite": false}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api/profiles/import

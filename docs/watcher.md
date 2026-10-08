@@ -1,3 +1,5 @@
+> The controller now sends phone alerts itself (Settings → Safety & Alerts, see [safety.md](safety.md)). watcher.py is still useful as a second, independent check running on another computer.
+
 ### Watcher
 
 watcher.py is a watchdog for your kiln. It is a stand-alone python script that, every few seconds, verifies the kiln-controller.py process is running, and within a certain acceptable temperature range. By default it checks every 10s and after six failed checks, it sends a message to a slack channel. It will send a message every 60s until the problem[s] are solved. It can run on any network, but needs to be able to access the kiln and slack.

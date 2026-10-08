@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import websocket
+import requests
 import json
 import time
 import csv
@@ -38,8 +38,23 @@ PID_HEADER = [
 ]
 
 
-def logger(hostname, csvfile, noprofilestats, pidstats, stdout):
-    status_ws = websocket.WebSocket()
+def events(hostname, auth=None):
+    '''yield status messages from the controller's event stream,
+    reconnecting forever'''
+    url = "http://%s/api/events" % hostname
+    while True:
+        try:
+            with requests.get(url, stream=True, timeout=60, auth=auth) as r:
+                r.raise_for_status()
+                for line in r.iter_lines(decode_unicode=True):
+                    if line and line.startswith("data: "):
+                        yield json.loads(line[6:])
+        except (requests.RequestException, ValueError) as e:
+            print("connection problem (%s), retrying in 5s" % e, file=sys.stderr)
+            time.sleep(5)
+
+
+def logger(hostname, csvfile, noprofilestats, pidstats, stdout, auth=None):
 
     csv_fields = []
     if not noprofilestats:
@@ -57,18 +72,7 @@ def logger(hostname, csvfile, noprofilestats, pidstats, stdout):
     else:
         csv_stdout = None
 
-    while True:
-        try:
-            msg = json.loads(status_ws.recv())
-
-        except websocket.WebSocketException:
-            try:
-                status_ws.connect(f'ws://{hostname}/status')
-            except Exception:
-                time.sleep(5)
-
-            continue
-
+    for msg in events(hostname, auth):
         if msg.get('type') == 'backlog':
             continue
 
@@ -97,6 +101,8 @@ if __name__ == "__main__":
     parser.add_argument('--pidstats', action='store_true', help="Include PID stats")
     parser.add_argument('--noprofilestats', action='store_true', help="Do not store profile stats (default is to store them)")
     parser.add_argument('--stdout', action='store_true', help="Also print to stdout")
+    parser.add_argument('--password', type=str, default=None, help="Web UI password, if you set one")
     args = parser.parse_args()
 
-    logger(args.hostname, args.csvfile, args.noprofilestats, args.pidstats, args.stdout)
+    auth = ("kiln", args.password) if args.password else None
+    logger(args.hostname, args.csvfile, args.noprofilestats, args.pidstats, args.stdout, auth)

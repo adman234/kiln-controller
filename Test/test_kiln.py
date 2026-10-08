@@ -279,3 +279,106 @@ def test_automatic_restart_after_power_cut(sim, tmp_path, monkeypatch):
     assert fresh.should_i_automatic_restart()
     fresh.automatic_restart()
     assert fresh.state == "RUNNING" and abs(fresh.runtime - 300) < 1 and fresh.heat_on_total == 120
+
+
+# ------------------------------------------------------------------- safety
+def _run_until(sim, cond, max_ticks=50000):
+    for _ in range(max_ticks):
+        if cond():
+            return True
+        sim.tick()
+    return False
+
+
+def test_no_false_runaway_after_stopping_hot(sim):
+    sim.store.save({"name": "hot", "temp_units": "c", "data": [[0, 20], [7200, 1000], [9000, 1000]]})
+    sim.run_profile(sim.store.get_profile("hot"), allow_seek=False)
+    assert _run_until(sim, lambda: sim.current_temp() > 950)
+    sim.abort_run()
+    # coast and cool for 40 simulated minutes
+    for _ in range(1200):
+        sim.tick()
+    assert sim.last_error is None, sim.last_error
+
+
+def test_runaway_detected_when_relay_stuck(sim):
+    alarms = []
+    import notify
+    sim.store.save({"name": "x", "temp_units": "c", "data": [[0, 20], [600, 20]]})
+    # relay stuck on: the kiln heats although we command 0
+    real_apply = sim.apply_output
+
+    def stuck(fraction):
+        real_apply(1.0)
+        sim.output_level = fraction
+        return 0
+    sim.apply_output = stuck
+    orig = notify.notifier.send
+    notify.notifier.send = lambda *a, **k: alarms.append(a) or True
+    try:
+        for _ in range(600):
+            sim.tick()
+    finally:
+        notify.notifier.send = orig
+    assert sim.last_error and "stuck" in sim.last_error
+    assert alarms and alarms[0][0] == "KILN ALARM"
+
+
+def test_stall_detected_when_thermocouple_falls_out(sim):
+    sim.store.save({"name": "long", "temp_units": "c", "data": [[0, 400], [36000, 1200]]})
+    monkey_temp = [25.0]
+    sim.current_temp = lambda: monkey_temp[0]   # reads room temperature forever
+    sim.run_profile(sim.store.get_profile("long"), allow_seek=False)
+    for _ in range(3000):
+        if sim.state != "RUNNING":
+            break
+        sim.tick()
+    assert sim.state == "IDLE"
+    assert "No temperature rise" in (sim.last_error or "")
+
+
+# ------------------------------------------------------- notifications etc
+def test_notifier_ntfy_and_dedupe(monkeypatch):
+    import notify
+    sent = []
+    monkeypatch.setattr(notify.Notifier, "_post", staticmethod(lambda url, data, headers: sent.append((url, data, headers))))
+    monkeypatch.setitem(settings._values, "notify_service", "ntfy")
+    monkeypatch.setitem(settings._values, "notify_url", "https://ntfy.sh/kiln-test")
+    n = notify.Notifier()
+    # deliver synchronously for the test
+    monkeypatch.setattr(n, "send", n.send)
+    import threading
+    monkeypatch.setattr(threading, "Thread", lambda target, args: type("T", (), {"start": lambda s: target(*args), "daemon": True})())
+    assert n.send("KILN ALARM", "stuck relay", urgent=True, key="runaway")
+    assert not n.send("KILN ALARM", "stuck relay", urgent=True, key="runaway")  # repeat suppressed
+    assert len(sent) == 1
+    url, data, headers = sent[0]
+    assert url == "https://ntfy.sh/kiln-test" and data == b"stuck relay" and headers["Priority"] == "urgent"
+
+
+def test_sdnotify_sends_to_socket(tmp_path, monkeypatch):
+    import socket
+    import sdnotify
+    path = str(tmp_path / "notify.sock")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    srv.bind(path)
+    monkeypatch.setenv("NOTIFY_SOCKET", path)
+    assert sdnotify.watchdog()
+    assert srv.recv(100) == b"WATCHDOG=1"
+    monkeypatch.delenv("NOTIFY_SOCKET")
+    assert not sdnotify.ready()   # not under systemd: a no-op
+
+
+def test_event_listeners_get_backlog_then_updates(sim):
+    import queue
+    from ovenWatcher import OvenWatcher
+    w = OvenWatcher(sim)
+    q = queue.Queue(maxsize=2)
+    w.add_listener(q)
+    assert json.loads(q.get_nowait())["type"] == "backlog"
+    w.notify_all(sim.get_state())
+    msg = json.loads(q.get_nowait())
+    assert msg["state"] == "IDLE" and "temp_scale" in msg
+    # a client that stops reading is dropped instead of blocking the kiln
+    w.notify_all(sim.get_state()); w.notify_all(sim.get_state()); w.notify_all(sim.get_state())
+    assert q not in w.listeners

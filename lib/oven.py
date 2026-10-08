@@ -1,3 +1,4 @@
+import collections
 import datetime
 import json
 import logging
@@ -7,12 +8,18 @@ import time
 
 from settings import settings, STORAGE_DIR, atomic_write_json
 from sensors import create_sensor, TempSensorSimulated
-from profiles import Profile, ProfileStore, ProfileError  # noqa: F401 (Profile re-exported)
+from profiles import Profile, ProfileStore, ProfileError
 from history import RunHistory
 from autotune import RelayAutotuner
+from notify import notifier
+from units import to_display, delta_to_display
+import sdnotify
 import config
 
 log = logging.getLogger(__name__)
+
+# Profile is re-exported for older scripts and tests (from oven import Profile)
+__all__ = ["Oven", "RealOven", "SimulatedOven", "PID", "Profile"]
 
 SCHEDULE_FILE = os.path.join(STORAGE_DIR, "scheduled.json")
 STATE_SAVE_INTERVAL = 30  # seconds between automatic restart state writes
@@ -42,19 +49,58 @@ duplog = Duplogger().logref()
 
 
 class Output(object):
-    '''This represents a GPIO output that controls a solid
-    state relay to turn the kiln elements on and off.'''
+    '''GPIO outputs: the solid state relay that switches the elements,
+    plus the optional safety contactor (in series with the SSR, closed only
+    while firing) and heartbeat for an external watchdog relay.'''
     def __init__(self):
         import digitalio
         from sensors import pin
+
+        def out(bcm, value):
+            o = digitalio.DigitalInOut(pin(bcm))
+            o.direction = digitalio.Direction.OUTPUT
+            o.value = value
+            return o
+
         self.active = False
-        self.heater = digitalio.DigitalInOut(pin(settings.gpio_heat))
-        self.heater.direction = digitalio.Direction.OUTPUT
         self.off = bool(settings.gpio_heat_invert)
         self.on = not self.off
+        self.heater = out(settings.gpio_heat, self.off)
+
+        self.contactor = None
+        self.contactor_closed = False
+        self.c_off = bool(settings.gpio_contactor_invert)
+        if settings.gpio_contactor is not None and settings.gpio_contactor >= 0:
+            self.contactor = out(settings.gpio_contactor, self.c_off)
+            log.info("safety contactor on BCM %d" % settings.gpio_contactor)
+
+        self.heartbeat = None
+        self.hb = False
+        if settings.gpio_heartbeat is not None and settings.gpio_heartbeat >= 0:
+            self.heartbeat = out(settings.gpio_heartbeat, False)
+            log.info("watchdog heartbeat on BCM %d" % settings.gpio_heartbeat)
+
+    def close_contactor(self):
+        if self.contactor is not None and not self.contactor_closed:
+            self.heater.value = self.off
+            self.contactor.value = not self.c_off
+            self.contactor_closed = True
+            # let the contacts settle before the SSR switches any current
+            time.sleep(0.3)
+
+    def open_contactor(self):
         self.heater.value = self.off
+        if self.contactor is not None and self.contactor_closed:
+            self.contactor.value = self.c_off
+            self.contactor_closed = False
+
+    def beat(self):
+        if self.heartbeat is not None:
+            self.hb = not self.hb
+            self.heartbeat.value = self.hb
 
     def heat(self, sleepfor):
+        self.close_contactor()
         self.heater.value = self.on
         time.sleep(sleepfor)
 
@@ -109,6 +155,7 @@ class Oven(threading.Thread):
         self.heat_rate = 0
         self.heat_rate_temps = []
         self.output_level = 0.0
+        self.safety_samples = collections.deque()
         self.lock = threading.RLock()
         self.reset()
 
@@ -130,6 +177,8 @@ class Oven(threading.Thread):
         self.heat = 0
         self.pid = PID(ki=settings.pid_ki, kd=settings.pid_kd, kp=settings.pid_kp)
         self.catching_up = False
+        self.catchup_since = None
+        self.behind_notified = False
 
     # ------------------------------------------------------------------
     # time helpers (overridden by the simulator)
@@ -200,6 +249,7 @@ class Oven(threading.Thread):
     def abort_run(self, reason="stopped by user"):
         with self.lock:
             if self.state in ("RUNNING", "PAUSED"):
+                self.notify_run_end(reason)
                 self.record_run(reason)
             if self.state == "TUNING" and self.autotuner and not self.autotuner.finished:
                 self.autotuner.fail(reason)
@@ -286,10 +336,94 @@ class Oven(threading.Thread):
             log.info("total cost = %s%.2f" % (settings.currency_type, self.cost))
             self.abort_run("completed")
 
+    def notify_run_end(self, reason):
+        name = self.profile.name if self.profile else "firing"
+        if reason == "completed":
+            if settings.notify_on_complete:
+                notifier.send("Firing complete", "%s finished. %.1f kWh, %s%.2f." % (
+                    name, self.kwh, settings.currency_type, self.cost), key="complete-%s" % time.time())
+        elif reason != "stopped by user" and not reason.startswith("replaced"):
+            notifier.send("Firing stopped", "%s stopped: %s" % (name, reason), urgent=True,
+                          key="stopped-%s" % reason)
+
     def add_energy(self, heat_on_seconds):
         self.heat_on_total += heat_on_seconds
         self.kwh = settings.kw_elements * self.heat_on_total / 3600.0
         self.cost = self.kwh * settings.kwh_rate
+
+    # ------------------------------------------------------------------
+    # safety monitoring: stuck relay, no heating, behind schedule
+    def safety_sample(self, temp):
+        if temp is None:
+            return
+        now = self.clock()
+        self.safety_samples.append((now, temp, self.output_level))
+        keep = max(settings.runaway_minutes, settings.stall_minutes) * 60 + 120
+        while self.safety_samples and now - self.safety_samples[0][0] > keep:
+            self.safety_samples.popleft()
+
+    def safety_window(self, seconds):
+        '''samples covering the last `seconds`, or None if we have not
+        been watching that long'''
+        if not self.safety_samples:
+            return None
+        now = self.safety_samples[-1][0]
+        if now - self.safety_samples[0][0] < seconds:
+            return None
+        return [x for x in self.safety_samples if now - x[0] <= seconds]
+
+    def check_safety(self):
+        '''returns (kind, message) for a dangerous condition, else None'''
+        scale = settings.temp_scale
+        u = "\u00b0" + scale.upper()
+        if settings.runaway_detect:
+            w = self.safety_window(settings.runaway_minutes * 60)
+            if w and all(x[2] == 0 for x in w):
+                rise = w[-1][1] - w[0][1]
+                if rise > settings.runaway_rise:
+                    return ("runaway", "Kiln heated %.0f%s in %d minutes with the elements switched off. "
+                            "The relay (SSR) is probably stuck on. Switch off power to the kiln." % (
+                                delta_to_display(rise, scale), u, settings.runaway_minutes))
+        if settings.stall_detect and self.state in ("RUNNING", "PAUSED", "TUNING"):
+            w = self.safety_window(settings.stall_minutes * 60)
+            if w and all(x[2] >= 0.95 for x in w):
+                rise = w[-1][1] - w[0][1]
+                if rise < settings.stall_rise:
+                    return ("stall", "No temperature rise (%.1f%s) after %d minutes at full power at %.0f%s. "
+                            "Check the thermocouple is in the kiln, and the elements and relay." % (
+                                delta_to_display(rise, scale), u, settings.stall_minutes,
+                                to_display(w[-1][1], scale), u))
+        return None
+
+    def handle_safety(self):
+        problem = self.check_safety()
+        if not problem:
+            return
+        kind, msg = problem
+        log.error("SAFETY: %s" % msg)
+        notifier.send("KILN ALARM" if kind == "runaway" else "Kiln not heating", msg, urgent=True, key=kind)
+        if self.state in ("RUNNING", "PAUSED", "TUNING"):
+            self.abort_run("safety: " + msg)
+        self.output_off()
+        self.last_error = msg
+        self.safety_samples.clear()
+
+    def check_behind_schedule(self):
+        if not self.catching_up:
+            self.catchup_since = None
+            return
+        now = self.clock()
+        if self.catchup_since is None:
+            self.catchup_since = now
+        elif not self.behind_notified and now - self.catchup_since > settings.behind_schedule_minutes * 60:
+            self.behind_notified = True
+            notifier.send("Kiln behind schedule",
+                          "%s has been waiting for the kiln to catch up for %d minutes (at %.0f\u00b0%s, target %.0f). "
+                          "Elements may be wearing out or the ramp is too fast." % (
+                              self.profile.name if self.profile else "The firing",
+                              (now - self.catchup_since) / 60,
+                              to_display(self.current_temp() or 0, settings.temp_scale), settings.temp_scale.upper(),
+                              to_display(self.target, settings.temp_scale)), key="behind")
 
     # ------------------------------------------------------------------
     # run history
@@ -377,6 +511,9 @@ class Oven(threading.Thread):
             return
         log.info("starting scheduled run of %s" % profile.name)
         self.run_profile(profile, startat=s.get("startat", 0))
+        if settings.notify_on_complete:
+            notifier.send("Firing started", "Scheduled firing %s has started." % profile.name,
+                          key="started-%s" % time.time())
         if self.ovenwatcher:
             self.ovenwatcher.record(profile)
 
@@ -414,6 +551,12 @@ class Oven(threading.Thread):
             return None
         if self.autotuner.finished:
             self.last_autotune = self.autotuner.status()
+            if self.autotuner.phase == "done":
+                notifier.send("Autotune finished", "Open Settings -> PID & Autotune to apply the new values.",
+                              key="autotune-%s" % time.time())
+            else:
+                notifier.send("Autotune failed", str(self.autotuner.error), urgent=True,
+                              key="autotune-%s" % time.time())
             self.autotuner = None
             self.state = "IDLE"
             self.target = 0
@@ -511,6 +654,8 @@ class Oven(threading.Thread):
             log.error("automatic restart: profile %s not found" % d.get("profile"))
             return
         log.info("automatically restarting profile = %s at minute = %d" % (profile.name, startat))
+        notifier.send("Kiln restarted after power loss",
+                      "%s resumed at %d minutes into the schedule." % (profile.name, startat), key="restart")
         self.run_profile(profile, startat=startat, allow_seek=False)  # We don't want a seek on an auto restart.
         self.add_energy(d.get("heat_on_s", 0) or 0)
         if not self.heat_on_total and d.get("cost"):
@@ -557,9 +702,20 @@ class Oven(threading.Thread):
                 self.last_error = "internal error: %r" % (e,)
                 time.sleep(1)
 
+    def beat(self):
+        '''called every cycle: tells systemd and any external watchdog
+        that the control loop is alive'''
+        sdnotify.watchdog()
+
     def tick(self):
+        self.beat()
         temp = self.current_temp()
         self.set_heat_rate(self.clock(), temp)
+        self.safety_sample(temp)
+        self.handle_safety()
+        if self.board.temp_sensor.status.over_error_limit() and self.state in ("IDLE", "SCHEDULED"):
+            notifier.send("Thermocouple problem", "Too many errors reading the temperature sensor. "
+                          "Check Settings -> Diagnostics.", urgent=True, key="sensor")
         if temp is not None and self.state in ("RUNNING", "PAUSED"):
             self.max_temp = temp if self.max_temp is None else max(self.max_temp, temp)
 
@@ -599,6 +755,7 @@ class Oven(threading.Thread):
                 if self.state != "RUNNING":
                     return
                 self.kiln_must_catch_up()
+                self.check_behind_schedule()
                 self.update_runtime()
                 self.update_target_temp()
             self.heat_then_cool()
@@ -758,6 +915,11 @@ class RealOven(Oven):
         self.output_level = 0.0
         if hasattr(self, "output"):
             self.output.force_off()
+            self.output.open_contactor()
+
+    def beat(self):
+        super().beat()
+        self.output.beat()
 
     def apply_output(self, fraction):
         fraction = min(max(fraction, 0.0), 1.0)
