@@ -6,21 +6,16 @@ import csv
 import time
 import argparse
 
-try:
-        sys.dont_write_bytecode = True
-        import config
-        sys.dont_write_bytecode = False
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), 'lib'))
+import config
+from settings import settings
 
-except ImportError:
-        print("Could not import config file.")
-        print("Copy config.py.EXAMPLE to config.py and adapt it for your setup.")
-        exit(1)
+# NOTE: the web UI has a better autotuner (Settings -> PID & Autotune)
+# that measures the kiln at the temperature you choose. This script is
+# kept for people who prefer the command line.
 
 
 def recordprofile(csvfile, targettemp):
-
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    sys.path.insert(0, script_dir + '/lib/')
 
     from oven import RealOven, SimulatedOven
 
@@ -30,7 +25,7 @@ def recordprofile(csvfile, targettemp):
     csvout.writerow(['time', 'temperature'])
 
     # construct the oven
-    if config.simulate:
+    if settings.simulate:
         oven = SimulatedOven()
         oven.target = targettemp * 2 # insures max heating for simulation
     else:
@@ -48,15 +43,14 @@ def recordprofile(csvfile, targettemp):
 
         # heating to target of 400F
         temp = 0
-        sleepfor = config.sensor_time_wait
+        sleepfor = settings.sensor_time_wait
         stage = "heating"
         while(temp <= targettemp):
-            if config.simulate:
+            if settings.simulate:
                 oven.heat_then_cool()
             else:
                 oven.output.heat(sleepfor)
-            temp = oven.board.temp_sensor.temperature() + \
-                config.thermocouple_offset
+            temp = oven.current_temp()
             
             print("stage = %s, actual = %.2f, target = %.2f" % (stage,temp,targettemp))
             csvout.writerow([time.time(), temp])
@@ -64,15 +58,14 @@ def recordprofile(csvfile, targettemp):
 
         # overshoot past target of 400F and then cooling down to 400F
         stage = "cooling"
-        if config.simulate:
+        if settings.simulate:
             oven.target = 0
         while(temp >= targettemp):
-            if config.simulate:
+            if settings.simulate:
                 oven.heat_then_cool()
             else:
                 oven.output.cool(sleepfor)
-            temp = oven.board.temp_sensor.temperature() + \
-                config.thermocouple_offset
+            temp = oven.current_temp()
             
             print("stage = %s, actual = %.2f, target = %.2f" % (stage,temp,targettemp))
             csvout.writerow([time.time(), temp])
@@ -81,7 +74,7 @@ def recordprofile(csvfile, targettemp):
     finally:
         f.close()
         # ensure we always shut the oven down!
-        if not config.simulate:
+        if not settings.simulate:
             oven.output.cool(0)
 
 
@@ -170,10 +163,17 @@ def calculate(filename, tangentdivisor, showplot):
     Ki = Kp / Ti
     Kd = Kp * Td
 
-    # output to the user
+    # output to the user. The data is in Celsius so these gains are per
+    # degree C, which is what the web UI (Settings -> PID) expects.
+    print("gains per degree C (enter these in the web UI under Settings -> PID):")
     print("pid_kp = %s" % (Kp))
     print("pid_ki = %s" % (1 / Ki))
     print("pid_kd = %s" % (Kd))
+    if config.temp_scale.lower() == "f":
+        print("\nthe same gains for config.py (temp_scale = f):")
+        print("pid_kp = %s" % (Kp / 1.8))
+        print("pid_ki = %s" % (1.8 / Ki))
+        print("pid_kd = %s" % (Kd / 1.8))
 
 
     if showplot:
@@ -191,9 +191,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     csvfile = "tuning.csv"
-    target = args.target_temp
-    if config.temp_scale.lower() == "c":
-        target = (target - 32)*5/9
+    # --target_temp is given in degrees F, the controller works in C
+    target = (args.target_temp - 32) * 5 / 9
     tangentdivisor = args.tangent_divisor 
 
     # default behavior is to record profile to csv file tuning.csv

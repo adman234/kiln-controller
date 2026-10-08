@@ -408,3 +408,124 @@ body {
     overflow-x: hidden;
     overflow-y: hidden;
 }
+
+/* ---- additions: toolbar, editor, settings ---- */
+#toolbar {
+    margin-top: 10px;
+}
+#toolbar .kc-title {
+    font-size: 20px;
+    color: #3F3E3A;
+    vertical-align: middle;
+    margin-right: 8px;
+}
+#toolbar .btn-group, #toolbar > .pull-right > .btn {
+    margin-left: 4px;
+}
+#error_bar, #scheduled_bar, #tuning_bar {
+    margin: 10px 0 0 0;
+    padding: 8px 12px;
+}
+.edit-actions .btn {
+    margin-left: 2px;
+}
+.edit-toolbar {
+    margin-top: 10px;
+}
+.edit-toolbar label {
+    margin-right: 12px;
+    font-weight: normal;
+}
+.profile-edit input.form-control {
+    max-width: 110px;
+}
+.profile-edit .input-group {
+    max-width: 150px;
+}
+.profile-edit .ds-trend {
+    color: #fff;
+}
+.segment-builder {
+    margin-top: 8px;
+    padding: 8px;
+    background: rgba(0,0,0,0.04);
+    border-radius: 4px;
+}
+.segment-builder input {
+    margin: 2px 0;
+}
+.library-tools {
+    margin-bottom: 10px;
+}
+.library-tools input {
+    width: 240px;
+}
+#library_table th.sortable {
+    cursor: pointer;
+    white-space: nowrap;
+}
+.lib-notes {
+    max-width: 260px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.settings-tabs {
+    padding-top: 15px;
+}
+.settings-tabs h4 {
+    margin-top: 18px;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 4px;
+}
+.setting-row .help-block {
+    margin-bottom: 0;
+}
+.autotune-form label {
+    font-weight: normal;
+    margin-right: 10px;
+}
+.autotune-result {
+    margin-top: 12px;
+}
+@media (max-width: 767px) {
+    #status {
+        height: auto;
+    }
+    .ds-title {
+        width: 70px;
+    }
+    .display {
+        font-size: 28px;
+    }
+    .edit-actions {
+        text-align: left;
+        margin-top: 8px;
+    }
+}
+#toolbar .pull-right {
+    white-space: nowrap;
+}
+#toolbar .btn {
+    float: none;
+}
+.autotune-panel .panel-body {
+    background: #fff;
+    color: #333;
+    box-shadow: none;
+    -webkit-box-shadow: none;
+    -moz-box-shadow: none;
+}
+#tab_diag select {
+    width: auto;
+    display: inline-block;
+}
+/* confirm/result dialogs can open on top of the settings dialog */
+#confirmModal, #autotuneModal {
+    z-index: 1070;
+}
+@media (max-width: 767px) {
+    .hide-phone {
+        display: none !important;
+    }
+}

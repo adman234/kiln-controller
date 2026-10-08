@@ -10,3 +10,10 @@ thumbs.db
 .idea/*
 state.json
 venv/*
+# per-install data written by the controller
+storage/settings.json
+storage/run_history.json
+storage/scheduled.json
+*.tmp
+.pytest_cache/
+__pycache__/

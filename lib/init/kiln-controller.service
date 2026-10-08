@@ -1,8 +1,28 @@
+# Template - install.sh fills in @USER@ and @DIR@ and copies this to
+# /etc/systemd/system/kiln-controller.service
 [Unit]
-Description=kiln-controller
+Description=Kiln controller
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-ExecStart=/home/pi/kiln-controller/venv/bin/python /home/pi/kiln-controller/kiln-controller.py
+Type=simple
+User=@USER@
+Group=@USER@
+WorkingDirectory=@DIR@
+Environment=PYTHONUNBUFFERED=1
+# make sure the elements are off before we start and after we stop/crash
+ExecStartPre=-@DIR@/venv/bin/python @DIR@/tools/relay-off.py
+ExecStart=@DIR@/venv/bin/python @DIR@/kiln-controller.py
+ExecStopPost=-@DIR@/venv/bin/python @DIR@/tools/relay-off.py
+Restart=always
+RestartSec=5
+# the control loop matters more than anything else on this little computer
+Nice=-5
+# hardening that does not get in the way of GPIO/SPI access
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target

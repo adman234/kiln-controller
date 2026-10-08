@@ -1,74 +1,51 @@
-#!/usr/bin/env python
-import config
-from digitalio import DigitalInOut
-import time
+#!/usr/bin/env python3
+'''Test your temperature sensor.
+
+Uses the sensor board, thermocouple type and pins from the web UI
+settings (storage/settings.json) or config.py.
+
+    ./test-thermocouple.py
+
+Prints the temperature once a second. Touch or warm the thermocouple
+and make sure the value changes. Stop kiln-controller first
+(sudo systemctl stop kiln-controller) so the two don't fight over the
+sensor. The same information is shown live in the web UI under
+Settings -> Diagnostics.
+'''
 import datetime
-import busio
-import adafruit_bitbangio as bitbangio
+import os
+import sys
+import time
 
-try:
-    import board
-except NotImplementedError:
-    print("not running a recognized blinka board, exiting...")
-    import sys
-    sys.exit()
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), 'lib'))
+from settings import settings
+from sensors import create_sensor
+from units import to_display
 
-########################################################################
-#
-# To test your thermocouple...
-#
-# Edit config.py and set the following in that file to match your
-# hardware setup: SPI_SCLK, SPI_MOSI, SPI_MISO, SPI_CS
-#
-# then run this script...
-# 
-# ./test-thermocouple.py
-#
-# It will output a temperature in degrees every second. Touch your
-# thermocouple to heat it up and make sure the value changes. Accuracy
-# of my thermocouple is .25C.
-########################################################################
+if settings.simulate:
+    print("simulate is on (config.py / settings), turn it off to test real hardware")
+    sys.exit(1)
 
-spi = None
-if(hasattr(config,'spi_sclk') and
-   hasattr(config,'spi_mosi') and
-   hasattr(config,'spi_miso')):
-    spi = bitbangio.SPI(config.spi_sclk, config.spi_mosi, config.spi_miso)
-    print("Software SPI selected for reading thermocouple")
-    print("SPI configured as:\n")
-    print("    config.spi_sclk = %s BCM pin" % (config.spi_sclk))
-    print("    config.spi_mosi = %s BCM pin" % (config.spi_mosi))
-    print("    config.spi_miso = %s BCM pin" % (config.spi_miso))
-    print("    config.spi_cs   = %s BCM pin\n" % (config.spi_cs))
-else:
-    spi = board.SPI();
-    print("Hardware SPI selected for reading thermocouple")
+print("sensor board:      %s" % settings.sensor_board)
+print("thermocouple type: %s" % settings.thermocouple_type)
+print("spi mode:          %s" % settings.spi_mode)
+if settings.spi_mode == "software":
+    print("    clock=BCM%d miso=BCM%d mosi=BCM%d" % (settings.spi_sclk, settings.spi_miso, settings.spi_mosi))
+print("    chip select=BCM%d\n" % settings.spi_cs)
 
-cs = DigitalInOut(config.spi_cs)
-cs.switch_to_output(value=True)
-sensor = None
-
-print("\nboard: %s" % (board.board_id))
-if(config.max31855):
-    import adafruit_max31855
-    print("thermocouple: adafruit max31855")
-    sensor = adafruit_max31855.MAX31855(spi, cs)
-if(config.max31856):
-    import adafruit_max31856
-    print("thermocouple: adafruit max31856")
-    sensor = adafruit_max31856.MAX31856(spi, cs)
-
-print("Degrees displayed in %s\n" % (config.temp_scale))
-
-temp = 0
-while(True):
+sensor = create_sensor()
+sensor.start()
+scale = settings.temp_scale
+while True:
     time.sleep(1)
-    try:
-        temp = sensor.temperature
-        scale = "C"
-        if config.temp_scale == "f":
-            temp = temp * (9/5) + 32 
-            scale ="F"
-        print("%s %0.2f%s" %(datetime.datetime.now(),temp,scale))
-    except Exception as error:
-        print("error: " , error)
+    d = sensor.diagnostics()
+    t = d["temperature_c"]
+    cj = d["cold_junction_c"]
+    msg = "%s  temp %s%s" % (datetime.datetime.now().strftime("%H:%M:%S"),
+                             "%.2f" % to_display(t, scale) if t is not None else "----", scale.upper())
+    if cj is not None:
+        msg += "  cold junction %.2f%s" % (to_display(cj, scale), scale.upper())
+    msg += "  errors %d%%" % d["error_percent"]
+    if d["recent_errors"]:
+        msg += "  last error: %s" % d["recent_errors"][-1]["error"]
+    print(msg)

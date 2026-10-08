@@ -1,11 +1,18 @@
 import logging
 import os
-from digitalio import DigitalInOut
-import busio
 
 ########################################################################
 #
-#   General options
+#   config.py holds the DEFAULT settings.
+#
+#   Most of these can now be changed from the web UI (gear icon). Changes
+#   made there are saved in storage/settings.json and override the values
+#   in this file. To go back to these defaults, delete that file.
+#
+#   All temperatures in this file are in temp_scale units (see below).
+#   Internally the controller works in Celsius.
+#
+########################################################################
 
 ### Logging
 log_level = logging.INFO
@@ -17,153 +24,82 @@ listening_port = 8081
 ########################################################################
 # Cost Information
 #
-# This is used to calculate a cost estimate before a run. It's also used
-# to produce the actual cost during a run. My kiln has three
-# elements that when my switches are set to high, consume 9460 watts.
-kwh_rate        = 0.1319  # cost per kilowatt hour per currency_type to calculate cost to run job
-kw_elements     = 9.460 # if the kiln elements are on, the wattage in kilowatts
-currency_type   = "$"   # Currency Symbol to show when calculating cost to run job
+# Used for the cost estimate before a run and the actual cost during a
+# run. After a few firings the estimate is learned from your kiln's
+# real on-time (see lib/history.py).
+kwh_rate        = 0.1319  # cost per kilowatt hour
+kw_elements     = 9.460   # power of the elements when on, in kilowatts
+currency_type   = "$"     # Currency Symbol
 
 ########################################################################
 #
-# Hardware Setup (uses BCM Pin Numbering)
+# Hardware Setup (BCM pin numbers)
 #
-# kiln-controller.py uses SPI interface from the blinka library to read
-# temperature data from the adafruit-31855 or adafruit-31856.
-# Blinka supports many different boards. I've only tested raspberry pi.
-#
-# First you must decide whether to use hardware spi or software spi.
-# 
-# Hardware SPI
-#
-# - faster
-# - requires 3 specific GPIO pins be used on rpis
-# - no pins are listed in this config file 
-# 
-# Software SPI
-#
-# - slower (which will not matter for reading a thermocouple
-# - can use any GPIO pins
-# - pins must be specified in this config file
+# Software SPI (default) can use any GPIO pins. Hardware SPI on a pi
+# must use SPI0: SCLK = BCM 11, MISO = BCM 9, MOSI = BCM 10 and any pin
+# for chip select.
+spi_mode  = "software"  # "software" or "hardware"
+spi_sclk  = 17    # spi clock
+spi_miso  = 27    # spi Microcomputer In Serial Out (DO on the breakout)
+spi_cs    = 22    # spi Chip Select
+spi_mosi  = 10    # spi Microcomputer Out Serial In (not connected on MAX31855)
+gpio_heat = 23    # output that controls relay
+gpio_heat_invert = False  # invert the output state
 
 #######################################
-# SPI pins if you choose Hardware SPI #
+### Temperature sensor board
 #######################################
-# On the raspberry pi, you MUST use predefined
-# pins for HW SPI. In the case of the adafruit-31855, only 3 pins are used:
-#
-#    SPI0_SCLK = BCM pin 11 = CLK on the adafruit-31855
-#    SPI0_MOSI = BCM pin 10 = not connected
-#    SPI0_MISO = BCM pin 9  = D0 on the adafruit-31855
-#   
-# plus a GPIO output to connect to CS. You can use any GPIO pin you want.
-# I chose gpio pin 5:
-#
-#    GPIO5    = BCM pin 5   = CS on the adafruit-31855
-#
-# Note that NO pins are configured in this file for hardware spi
+#   max31855 - K type thermocouple only
+#   max31856 - B, E, J, K, N, R, S, T thermocouples
+#   max6675  - K type only, older chip
+#   mcp9600  - B, E, J, K, N, R, S, T thermocouples (I2C on SDA/SCL)
+#   max31865 - PT100/PT1000 RTD (only good to ~850C)
+sensor_board = "max31855"
+thermocouple_type = "K"
 
-#######################################
-# SPI pins if you choose software spi #
-#######################################
-# For software SPI, you can choose any GPIO pins you like.
-# You must connect clock, mosi, miso and cs each to a GPIO pin
-# and configure them below based on your connections.
-
-#######################################
-# SPI is Autoconfigured !!!
-#######################################
-# whether you choose HW or SW spi, it is autodetected. If you list the PINs
-# below, software spi is assumed.
-
-#######################################
-# Output to control the relay
-#######################################
-# A single GPIO pin is used to control a relay which controls the kiln.
-# I use GPIO pin 23.
-
-try:
-    import board
-    spi_sclk  = board.D17    #spi clock
-    spi_miso  = board.D27    #spi Microcomputer In Serial Out
-    spi_cs    = board.D22    #spi Chip Select
-    spi_mosi  = board.D10    #spi Microcomputer Out Serial In (not connected) 
-    gpio_heat = board.D23    #output that controls relay
-    gpio_heat_invert = False #invert the output state
-except (NotImplementedError,AttributeError):
-    print("not running on blinka recognized board, probably a simulation")
-
-#######################################
-### Thermocouple breakout boards
-#######################################
-# There are only two breakoutboards supported. 
-#   max31855 - only supports type K thermocouples
-#   max31856 - supports many thermocouples
-max31855 = 1
-max31856 = 0
-# uncomment these two lines if using MAX-31856
-import adafruit_max31856
-thermocouple_type = adafruit_max31856.ThermocoupleType.K
-
-# here are the possible max-31856 thermocouple types
-#   ThermocoupleType.B
-#   ThermocoupleType.E
-#   ThermocoupleType.J
-#   ThermocoupleType.K
-#   ThermocoupleType.N
-#   ThermocoupleType.R
-#   ThermocoupleType.S
-#   ThermocoupleType.T
+# MCP9600 I2C address, RTD settings for MAX31865
+mcp9600_address = "0x67"
+rtd_nominal = 100.0
+rtd_ref_resistor = 430.0
+rtd_wires = 2
 
 ########################################################################
 #
-# If your kiln is above the starting temperature of the schedule when you 
-# click the Start button... skip ahead and begin at the first point in 
+# If your kiln is above the starting temperature of the schedule when you
+# click the Start button... skip ahead and begin at the first point in
 # the schedule matching the current kiln temperature.
 seek_start = True
 
 ########################################################################
 #
 # duty cycle of the entire system in seconds
-# 
-# Every N seconds a decision is made about switching the relay[s] 
-# on & off and for how long. The thermocouple is read 
-# temperature_average_samples times during and the average value is used.
+#
+# Every N seconds a decision is made about switching the relay[s]
+# on & off and for how long. The thermocouple is read
+# temperature_average_samples times during and the median value is used.
 sensor_time_wait = 2
-
 
 ########################################################################
 #
 #   PID parameters
 #
-# These parameters control kiln temperature change. These settings work
-# well with the simulated oven. You must tune them to work well with 
-# your specific kiln. Note that the integral pid_ki is
-# inverted so that a smaller number means more integral action.
-pid_kp = 10   # Proportional 25,200,200
+# Use the Autotune button in the web UI (gear -> PID) to find these.
+# Note that the integral pid_ki is inverted so that a smaller number
+# means more integral action. These are in temp_scale units.
+pid_kp = 10   # Proportional
 pid_ki = 80   # Integral
-pid_kd = 220.83497910261562 # Derivative
-
-########################################################################
-#
-# Initial heating and Integral Windup
-#
-# this setting is deprecated and is no longer used. this happens by
-# default and is the expected behavior.
-stop_integral_windup = True
+pid_kd = 220.83497910261562  # Derivative
 
 ########################################################################
 #
 #   Simulation parameters
 simulate = True
-sim_t_env      = 65   # deg
+sim_t_env      = 65     # deg
 sim_c_heat     = 500.0  # J/K  heat capacity of heat element
 sim_c_oven     = 5000.0 # J/K  heat capacity of oven
 sim_p_heat     = 5450.0 # W    heating power of oven
-sim_R_o_nocool = 0.5   # K/W  thermal resistance oven -> environment
-sim_R_o_cool   = 0.05   # K/W  " with cooling
+sim_R_o_nocool = 0.5    # K/W  thermal resistance oven -> environment
 sim_R_ho_noair = 0.1    # K/W  thermal resistance heat element -> oven
-sim_R_ho_air   = 0.05   # K/W  " with internal air circulation
 
 # if you want simulations to happen faster than real time, this can be
 # set as high as 1000 to speed simulations up by 1000 times.
@@ -174,11 +110,12 @@ sim_speedup_factor = 1
 #
 #   Time and Temperature parameters
 #
-# If you change the temp_scale, all settings in this file are assumed to
-# be in that scale.
-temp_scale          = "f" # c = Celsius | f = Fahrenheit - Unit to display
-time_scale_slope    = "h" # s = Seconds | m = Minutes | h = Hours - Slope displayed in temp_scale per time_scale_slope
-time_scale_profile  = "m" # s = Seconds | m = Minutes | h = Hours - Enter and view target time in time_scale_profile
+# temp_scale is the unit the values in THIS FILE are written in, and the
+# default display unit. You can switch the display unit any time in
+# the web UI without touching this file.
+temp_scale          = "f" # c = Celsius | f = Fahrenheit
+time_scale_slope    = "h" # m = Minutes | h = Hours - heating rate shown per
+time_scale_profile  = "m" # m = Minutes | h = Hours - default editor time unit
 
 # emergency shutoff the profile if this temp is reached or exceeded.
 # This just shuts off the profile. If your SSR is working, your kiln will
@@ -192,26 +129,21 @@ emergency_shutoff_temp = 2264 #cone 7
 # and cooling as fast as possible and not continuing until temp is reached.
 kiln_must_catch_up = True
 
-# This setting is required. 
 # This setting defines the window within which PID control occurs.
 # Outside this window (N degrees below or above the current target)
 # the elements are either 100% on because the kiln is too cold
 # or 100% off because the kiln is too hot. No integral builds up
-# outside the window. The bigger you make the window, the more
-# integral you will accumulate. This should be a positive integer.
+# outside the window.
 pid_control_window = 5 #degrees
 
 # thermocouple offset
 # If you put your thermocouple in ice water and it reads 36F, you can
-# set set this offset to -4 to compensate.  This probably means you have a
-# cheap thermocouple.  Invest in a better thermocouple.
+# set set this offset to -4 to compensate.
 thermocouple_offset=0
 
 # number of samples of temperature to take over each duty cycle.
-# The larger the number, the more load on the board. K type 
-# thermocouples have a precision of about 1/2 degree C. 
 # The median of these samples is used for the temperature.
-temperature_average_samples = 10 
+temperature_average_samples = 10
 
 # Thermocouple AC frequency filtering - set to True if in a 50Hz locale, else leave at False for 60Hz locale
 ac_freq_50hz = False
@@ -219,14 +151,6 @@ ac_freq_50hz = False
 ########################################################################
 # Emergencies - or maybe not
 ########################################################################
-# There are all kinds of emergencies that can happen including:
-# - temperature is too high (emergency_shutoff_temp exceeded)
-# - lost connection to thermocouple
-# - unknown error with thermocouple
-# - too many errors in a short period from thermocouple
-# but in some cases, you might want to ignore a specific error, log it,
-# and continue running your profile instead of having the process die.
-#
 # You should only set these to True if you experience a problem
 # and WANT to ignore it to complete a firing.
 ignore_temp_too_high = False
@@ -238,10 +162,10 @@ ignore_tc_cold_junction_temp_low = False
 ignore_tc_temp_high = False
 ignore_tc_temp_low = False
 ignore_tc_voltage_error = False
-ignore_tc_short_errors = False 
+ignore_tc_short_errors = False
 ignore_tc_unknown_error = False
 
-# This overrides all possible thermocouple errors and prevents the 
+# This overrides all possible thermocouple errors and prevents the
 # process from exiting.
 ignore_tc_too_many_errors = False
 
@@ -251,22 +175,15 @@ ignore_tc_too_many_errors = False
 # This only happens if power comes back before automatic_restart_window
 # is exceeded (in minutes). The kiln-controller.py process must start
 # automatically on boot-up for this to work.
-# DO NOT put automatic_restart_state_file anywhere in /tmp. It could be
-# cleaned up (deleted) by the OS on boot.
-# The state file is written to disk every sensor_time_wait seconds (2s by default)
-# and is written in the same directory as config.py.
+# DO NOT put automatic_restart_state_file anywhere in /tmp.
 automatic_restarts = True
 automatic_restart_window = 15 # max minutes since power outage
 automatic_restart_state_file = os.path.abspath(os.path.join(os.path.dirname( __file__ ),'state.json'))
 
 ########################################################################
 # load kiln profiles from this directory
-# created a repo where anyone can contribute profiles. The objective is
-# to load profiles from this repository by default.
-# See https://github.com/jbruce12000/kiln-profiles
-kiln_profiles_directory = os.path.abspath(os.path.join(os.path.dirname( __file__ ),"storage", "profiles")) 
-#kiln_profiles_directory = os.path.abspath(os.path.join(os.path.dirname( __file__ ),'..','kiln-profiles','pottery')) 
-
+# See https://github.com/jbruce12000/kiln-profiles for shared profiles
+kiln_profiles_directory = os.path.abspath(os.path.join(os.path.dirname( __file__ ),"storage", "profiles"))
 
 ########################################################################
 # low temperature throttling of elements
@@ -277,3 +194,8 @@ kiln_profiles_directory = os.path.abspath(os.path.join(os.path.dirname( __file__
 # To prevent throttling, set throttle_percent to 100.
 throttle_below_temp = 300
 throttle_percent = 20
+
+########################################################################
+# Web UI password. Leave empty for none (anyone on your network can
+# control the kiln). Can also be set in the web UI.
+web_password = ""

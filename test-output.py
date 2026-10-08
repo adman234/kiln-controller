@@ -1,47 +1,40 @@
-#!/usr/bin/env python
-import config
-import adafruit_max31855
-import digitalio
-import time
+#!/usr/bin/env python3
+'''Test the output that drives your relay.
+
+    ./test-output.py
+
+Switches the output on for five seconds and off for five seconds,
+forever (Ctrl-C to stop, the output is turned off on exit). Measure the
+voltage between the output and a ground pin, or watch the SSR's LED.
+Stop kiln-controller first (sudo systemctl stop kiln-controller).
+The web UI has a one-shot version under Settings -> Diagnostics.
+'''
 import datetime
+import os
+import sys
+import time
 
-try:
-    import board
-except NotImplementedError:
-    print("not running a recognized blinka board, exiting...")
-    import sys
-    sys.exit()
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), 'lib'))
+from settings import settings
+import digitalio
+import board
+from sensors import pin
 
-########################################################################
-#
-# To test your gpio output to control a relay...
-#
-# Edit config.py and set the following in that file to match your
-# hardware setup: gpio_heat, gpio_heat_invert
-#
-# then run this script...
-# 
-# ./test-output.py
-#
-# This will switch the output on for five seconds and then off for five 
-# seconds. Measure the voltage between the output and any ground pin.
-# You can also run ./gpioreadall.py in another window to see the voltage
-# on your configured pin change.
-########################################################################
-
-heater = digitalio.DigitalInOut(config.gpio_heat)
+heater = digitalio.DigitalInOut(pin(settings.gpio_heat))
 heater.direction = digitalio.Direction.OUTPUT
-off = config.gpio_heat_invert
+off = bool(settings.gpio_heat_invert)
 on = not off
 
 print("\nboard: %s" % (board.board_id))
-print("heater configured as config.gpio_heat = %s BCM pin\n" % (config.gpio_heat))
-print("heater output pin configured as invert = %r\n" % (config.gpio_heat_invert))
+print("heater output on BCM pin %d, invert = %r\n" % (settings.gpio_heat, settings.gpio_heat_invert))
 
-while True:
-    heater.value = on
-    print("%s heater on" % datetime.datetime.now())
-    time.sleep(5)
+try:
+    while True:
+        heater.value = on
+        print("%s heater on" % datetime.datetime.now())
+        time.sleep(5)
+        heater.value = off
+        print("%s heater off" % datetime.datetime.now())
+        time.sleep(5)
+finally:
     heater.value = off
-    print("%s heater off" % datetime.datetime.now())
-    time.sleep(5)
