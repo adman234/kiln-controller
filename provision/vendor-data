@@ -3,8 +3,8 @@
 #
 # Copy this file, named exactly "vendor-data" (no .txt), onto the SD card's
 # boot partition ("bootfs") after Raspberry Pi Imager has written it.
-# Raspberry Pi OS (Trixie and later) runs it once, via cloud-init, after
-# Imager's own settings (user, Wi-Fi, hostname) have been applied.
+# Raspberry Pi OS (Trixie and later) runs it once on first boot, via
+# cloud-init.
 #
 # Optional files next to it on the boot partition:
 #   kiln-install.conf   install options (see the example in the repo)
@@ -12,10 +12,27 @@
 #
 # Progress: http://<hostname>.local:8081 while installing.
 # Log:      kiln-install.log on the boot partition.
+#
+# cloud-init runs vendor scripts BEFORE Imager's own first-boot commands
+# (enabling SSH, sudo, unblocking Wi-Fi). So this part must finish at once:
+# it only installs a one-shot service that does the real install after
+# cloud-init has completed, and retries on every boot until it succeeds.
+
+BOOT="${KILN_BOOT:-/boot/firmware}"
+[ -d "$BOOT" ] || BOOT=/boot
+LIBDIR="${KILN_LIBDIR:-/usr/local/lib/kiln-firstboot}"
+UNITDIR="${KILN_UNITDIR:-/etc/systemd/system}"
+
+mkdir -p "$LIBDIR" "$UNITDIR"
+cat > "$LIBDIR/install.sh" <<'KILN_FIRSTBOOT_EOF'
+#!/bin/bash
+# kiln-controller first-boot installer, written by vendor-data and run by
+# kiln-firstboot.service once cloud-init has finished.
 
 BOOT="${KILN_BOOT:-/boot/firmware}"
 [ -d "$BOOT" ] || BOOT=/boot
 LOG="$BOOT/kiln-install.log"
+DONE_FILE="${KILN_DONE:-/var/lib/kiln-firstboot.done}"
 STATUS_DIR="${KILN_STATUS_DIR:-/run/kiln-install}"
 STEP_FILE="$STATUS_DIR/step"
 
@@ -70,17 +87,34 @@ fail() {
     step "Install FAILED: $*  -  see kiln-install.log on the SD card's boot partition"
     kill "$RENDER_PID" 2>/dev/null
     render
-    # leave the progress page running so the error can be read
+    # leave the progress page running so the error can be read. The
+    # service runs again on the next boot.
     exit 1
 }
 
 # ---- wait for the network and a correct clock (TLS needs it)
+network_report() {
+    echo "--- network diagnostics ---"
+    ip -br addr 2>&1
+    rfkill list 2>&1
+    iw reg get 2>&1 | head -5
+    nmcli -f DEVICE,TYPE,STATE,CONNECTION device status 2>&1
+    nmcli -f NAME,TYPE,DEVICE connection show 2>&1
+    ls -l /etc/netplan /etc/NetworkManager/system-connections 2>&1
+    journalctl -b -u NetworkManager --no-pager -n 60 2>&1 | grep -iE "wlan|wifi|wpa|auth|supplicant|fail|error|country|regdom" | tail -n 40
+    echo "--- end of network diagnostics ---"
+}
+
 step "Waiting for the network"
-for _ in $(seq 1 120); do
+for _ in $(seq 1 240); do
     getent hosts github.com >/dev/null 2>&1 && break
     sleep 5
 done
-getent hosts github.com >/dev/null 2>&1 || fail "no internet connection. Check the Wi-Fi settings in Raspberry Pi Imager (2.4 GHz only on a Pi Zero W)."
+if ! getent hosts github.com >/dev/null 2>&1; then
+    network_report
+    fail "no internet connection after 20 minutes. Check the Wi-Fi name, password and country in Raspberry Pi Imager. A Pi Zero W only does 2.4 GHz and WPA2 (not WPA3-only). The install retries on the next boot."
+fi
+echo "network is up:"; ip -br addr 2>&1
 
 step "Waiting for the clock to sync"
 for _ in $(seq 1 36); do
@@ -97,8 +131,10 @@ USER_HOME="$(getent passwd "$KILN_USER" | cut -d: -f6)"
 echo "installing for user $KILN_USER in $USER_HOME/kiln-controller"
 
 step "Installing git"
-DEBIAN_FRONTEND=noninteractive apt-get update -y || fail "apt-get update failed"
-DEBIAN_FRONTEND=noninteractive apt-get install -y git || fail "could not install git"
+# wait for other first-boot apt jobs instead of failing on the dpkg lock
+APT="apt-get -o DPkg::Lock::Timeout=900"
+DEBIAN_FRONTEND=noninteractive $APT update -y || fail "apt-get update failed"
+DEBIAN_FRONTEND=noninteractive $APT install -y git || fail "could not install git"
 
 step "Downloading the kiln controller"
 if [ ! -d "$USER_HOME/kiln-controller/.git" ]; then
@@ -120,6 +156,9 @@ if [ -n "$TAILSCALE_AUTHKEY" ]; then
 fi
 
 kill "$RENDER_PID" 2>/dev/null
+mkdir -p "$(dirname "$DONE_FILE")"
+date > "$DONE_FILE"
+systemctl disable kiln-firstboot.service 2>/dev/null
 if [ "$REBOOT" = "1" ]; then
     step "Done! Rebooting. The controller will be at this address in about two minutes."
     echo "=== kiln-controller install finished $(date) ==="
@@ -131,4 +170,31 @@ else
     systemctl start kiln-controller
     echo "=== kiln-controller install finished $(date) ==="
 fi
+exit 0
+KILN_FIRSTBOOT_EOF
+chmod 755 "$LIBDIR/install.sh"
+
+cat > "$UNITDIR/kiln-firstboot.service" <<KILN_UNIT_EOF
+[Unit]
+Description=Kiln controller first-boot install
+After=cloud-final.service network-online.target time-sync.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/kiln-firstboot.done
+
+[Service]
+Type=oneshot
+Environment=KILN_BOOT=$BOOT
+ExecStart=/bin/bash $LIBDIR/install.sh
+TimeoutStartSec=0
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target
+KILN_UNIT_EOF
+
+echo "kiln-controller: install scheduled to run after cloud-init ($(date))" >> "$BOOT/kiln-install.log"
+systemctl daemon-reload
+systemctl enable kiln-firstboot.service
+# --no-block: the unit is ordered after cloud-final, which is still running
+systemctl start --no-block kiln-firstboot.service
 exit 0
