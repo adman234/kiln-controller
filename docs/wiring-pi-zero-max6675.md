@@ -82,17 +82,33 @@ screw terminals) are **not** suitable. The IRF520N's gate threshold is
 some boards switch the SSRs and others don't, and the result can change with
 temperature. The 2N2222A circuit above does the job reliably.
 
+### Dual-D4184 "15A 400W" trigger board
+
+This board has two AOD4184 MOSFETs, two screw terminals, and a 4-pin
+GND / TRIG-PWM header. The AOD4184 switches fully at 3.3 V, so the Pi can
+drive it directly. It replaces the 2N2222A and both resistors, because the
+board already has its own gate resistor and pull-down.
+
 ```
- Pi 5V ───────────────── SSR + (all SSRs)
- SSR − (all SSRs) ────── module V− / LOAD− (drain)
- Pi GND ──────────────── module GND / V-IN− (source)
- BCM23 (pin 16) ──────── module SIG / PWM / IN
+            Pi Zero W                         D4184 board
+   pin 16 (BCM23) ─────────────────────► TRIG/PWM
+   pin 14 (GND)   ─────────────────────► GND (header)
+
+   pin 2  (5V)    ─────────────────────► VIN+ / DC+  ┐ input
+   pin 6  (GND)   ─────────────────────► VIN− / DC−  ┘ terminal
+
+                    SSR1 +  SSR2 +  ◄─── OUT+        ┐ output
+                    SSR1 −  SSR2 −  ◄─── OUT−        ┘ terminal
 ```
 
-Most modules already have a gate resistor and a pull-down. If yours doesn't,
-add about 100 Ω in series and 10 kΩ from gate to GND. The SSR inputs draw
-only about 10 to 30 mA in total, so the 2N2222A with a 1 kΩ resistor is
-already enough. A MOSFET isn't needed for this.
+* The terminal labels are usually printed on the underside of the board.
+  Check with a meter: **OUT+ is connected straight to VIN+**, and **OUT− is
+  the switched side** (the MOSFET drain).
+* The header has two GND pins and two TRIG/PWM pins; each pair is joined
+  on the board, so you only need one of each.
+* The onboard LED lights when the output is on. That makes it easy to test
+  with `./test-output.py` before you connect the SSRs.
+* Leave `gpio_heat_invert = False`.
 
 ## Other checks
 
