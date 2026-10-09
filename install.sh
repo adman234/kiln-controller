@@ -147,9 +147,20 @@ else
     printf '[Journal]\nSystemMaxUse=50M\n' | ${SUDO} tee /etc/systemd/journald.conf.d/kiln-controller.conf > /dev/null
 fi
 
-# wifi power saving makes the web UI on a pi zero very sluggish
+# wifi power saving makes the web UI on a pi zero very sluggish, and by
+# default NetworkManager gives up on wifi after 4 failed tries (e.g. while
+# the router reboots): keep trying forever. A firing never depends on
+# wifi, but alerts and the web UI do.
 if [ -d /etc/NetworkManager/conf.d ]; then
     printf '[connection]\nwifi.powersave = 2\n' | ${SUDO} tee /etc/NetworkManager/conf.d/kiln-wifi-powersave.conf > /dev/null
+fi
+if command -v nmcli >/dev/null 2>&1; then
+    # 0 = retry forever (UUIDs never contain the ':' separator)
+    nmcli -t -f UUID,TYPE connection show 2>/dev/null | while IFS=: read -r uuid type; do
+        if [ "${type}" = "802-11-wireless" ]; then
+            ${SUDO} nmcli connection modify "${uuid}" connection.autoconnect-retries 0 || true
+        fi
+    done
 fi
 
 if [ "${PROTECT_SD}" = "1" ]; then

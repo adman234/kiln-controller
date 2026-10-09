@@ -35,7 +35,7 @@ logging.basicConfig(level=config.log_level, format=config.log_format)
 log = logging.getLogger("kiln-controller")
 log.info("Starting kiln controller")
 
-from settings import settings, BOARD_TC_TYPES, SECRET_KEYS, atomic_write_json
+from settings import settings, BOARD_TC_TYPES, SECRET_KEYS, HARDWARE_KEYS, atomic_write_json
 from units import (to_display, state_to_display, convert_profile_data,
                    from_display, delta_from_display, pidstats_to_display)
 from profiles import ProfileStore, ProfileError, Profile
@@ -571,6 +571,19 @@ def api_update():
     except UpdateError as e:
         raise ApiError(str(e))
     return {"success": True, "status": updater.status}
+
+
+@app.post('/api/settings/reset')
+@api
+def api_settings_reset():
+    '''body: {"keep_hardware": true}. Back to the defaults that came with
+    this version of the software.'''
+    body = json_body()
+    if oven.state != "IDLE":
+        raise ApiError("stop the kiln (and cancel any delayed start) before resetting settings")
+    keep = HARDWARE_KEYS if body.get("keep_hardware", True) else ()
+    dropped = settings.reset_to_defaults(keep=keep)
+    return {"success": True, "reset": dropped, "restart_required": True, "values": settings.to_display()}
 
 
 def read_first_line(path):

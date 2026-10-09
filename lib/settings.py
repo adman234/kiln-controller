@@ -33,6 +33,7 @@ TC_TYPES = ["B", "E", "J", "K", "N", "R", "S", "T"]
 # current sensor (lib/current.py imports settings, so these live here)
 CT_CHANNELS = [["diff_0_1", "A0 - A1 (differential, recommended)"], ["diff_2_3", "A2 - A3 (differential)"],
                ["a0", "A0 (single ended)"], ["a1", "A1"], ["a2", "A2"], ["a3", "A3"]]
+ACTION_OPTIONS = [["notify", "Keep going, send an alert"], ["stop", "Stop the firing, send an alert"]]
 CT_RANGES = [[4.096, "+/-4.096 V"], [2.048, "+/-2.048 V (for 1 V CTs)"], [1.024, "+/-1.024 V"], [0.512, "+/-0.512 V"]]
 # which thermocouple types each board can linearize
 BOARD_TC_TYPES = {
@@ -102,8 +103,18 @@ SCHEMA = [
     ("Hardware", "sensor_time_wait", "float", "Control cycle (seconds)",
         {"min": 1, "max": 30, "restart": True, "help": "Use 10-30s for mechanical relays/contactors."}),
 
-    ("Safety", "runaway_detect", "bool", "Detect a relay stuck on",
-        {"help": "Alarm and open the safety contactor if the kiln keeps heating while the elements are off."}),
+    ("Safety", "tc_error_action", "choice", "Thermocouple errors or no reading",
+        {"options": ACTION_OPTIONS,
+         "help": "Either way the elements stay OFF while there is no trustworthy reading (treated like the kiln being too hot), "
+                 "the schedule waits, and an alert is sent. Heating resumes by itself when readings come back."}),
+    ("Safety", "tc_error_stop_minutes", "int", "Thermocouple errors: stop after (minutes)",
+        {"min": 1, "max": 600, "help": "Only used when the action above is Stop."}),
+    ("Safety", "internal_error_action", "choice", "Software error in the control loop",
+        {"options": ACTION_OPTIONS, "help": "The elements are switched off for that cycle either way."}),
+    ("Safety", "runaway_detect", "bool", "Detect a relay stuck on (temperature)",
+        {"help": "Alarm if the kiln keeps heating while the elements are off."}),
+    ("Safety", "runaway_action", "choice", "Stuck relay: action",
+        {"options": ACTION_OPTIONS, "help": "Without a safety contactor, stopping cannot cut the power to a stuck SSR."}),
     ("Safety", "runaway_minutes", "int", "Stuck relay: watch window (minutes)", {"min": 3, "max": 60}),
     ("Safety", "runaway_rise", "delta", "Stuck relay: rise that triggers the alarm", {"min": 2, "max": 200}),
     ("Safety", "stall_detect", "bool", "Detect no heating at full power",
@@ -136,16 +147,23 @@ SCHEMA = [
     ("Current sensor", "mains_voltage", "float", "Mains voltage at the elements (V)", {"min": 50, "max": 500}),
     ("Current sensor", "ct_prefire_check", "bool", "Pre-fire check",
         {"help": "When a firing or autotune starts, switch the elements on briefly and check that current flows."}),
+    ("Current sensor", "ct_prefire_on_schedule", "bool", "Pre-fire check when a delayed start is set",
+        {"help": "Check straight away when you set up a delayed start (and again when it starts), so you find out now, not at 5am."}),
     ("Current sensor", "ct_prefire_seconds", "float", "Pre-fire check: pulse length (s)", {"min": 1, "max": 10}),
+    ("Current sensor", "ct_prefire_tries", "int", "Pre-fire check: tries before giving up", {"min": 1, "max": 10,
+        "help": "20 seconds apart, so a one-off glitch does not cancel the firing."}),
     ("Current sensor", "ct_prefire_action", "choice", "Pre-fire check: if there is no current",
         {"options": [["stop", "Do not start, send an alert"], ["warn", "Start anyway, send an alert"]]}),
     ("Current sensor", "ct_detect_no_current", "bool", "Detect no current while firing",
         {"help": "Elements switched on but no current: kiln switched off, breaker tripped, element or relay failed."}),
     ("Current sensor", "ct_no_current_seconds", "int", "No current: after (seconds of on-time)", {"min": 5, "max": 600}),
     ("Current sensor", "ct_no_current_action", "choice", "No current: action",
-        {"options": [["stop", "Stop the firing, send an alert"], ["warn", "Keep going, send an alert"]]}),
+        {"options": [["warn", "Keep going, send an alert"], ["stop", "Stop the firing, send an alert"]]}),
     ("Current sensor", "ct_detect_stuck", "bool", "Detect current with the elements off (stuck relay)",
-        {"help": "Stops any firing, opens the safety contactor and sends an alarm. Much faster than the temperature-based check."}),
+        {"help": "Urgent alarm within seconds, much faster than the temperature-based check. Counts only above half the "
+                 "normal element current, so a loose CT picking up hum does not trigger it."}),
+    ("Current sensor", "ct_stuck_action", "choice", "Stuck relay: action",
+        {"options": ACTION_OPTIONS, "help": "Without a safety contactor, stopping cannot cut the power to a stuck SSR."}),
     ("Current sensor", "ct_stuck_seconds", "int", "Stuck relay: after (seconds)", {"min": 2, "max": 300}),
     ("Current sensor", "ct_low_amps", "float", "Warn if current while on is below (A, 0 = off)",
         {"min": 0, "max": 200, "help": "Catches one failed element out of several. Set a bit below your normal reading."}),
@@ -176,7 +194,7 @@ SCHEMA = [
     ("Errors", "ignore_tc_temp_high", "bool", "Ignore: thermocouple too high", {}),
     ("Errors", "ignore_tc_temp_low", "bool", "Ignore: thermocouple too low", {}),
     ("Errors", "ignore_tc_voltage_error", "bool", "Ignore: voltage error", {}),
-    ("Errors", "ignore_tc_too_many_errors", "bool", "Ignore: too many errors (dangerous)", {}),
+    ("Errors", "ignore_tc_too_many_errors", "bool", "Ignore: too many errors (keep using readings - dangerous)", {}),
 
     ("System", "simulate", "bool", "Simulation mode (no hardware)", {"restart": True}),
     ("System", "sim_speedup_factor", "int", "Simulation speed-up", {"min": 1, "max": 1000, "restart": True}),
@@ -264,14 +282,14 @@ def defaults_from_config(cfg=config):
         "kwh_rate": float(g("kwh_rate", 0.15)),
         "currency_type": str(g("currency_type", "$")),
 
-        "emergency_shutoff_temp": temp("emergency_shutoff_temp", 1260.0),
+        "emergency_shutoff_temp": temp("emergency_shutoff_temp", 1288.0),
         "seek_start": bool(g("seek_start", True)),
         "kiln_must_catch_up": bool(g("kiln_must_catch_up", True)),
         "pid_control_window": delta("pid_control_window", 3.0),
         "throttle_below_temp": temp("throttle_below_temp", 150.0),
         "throttle_percent": int(g("throttle_percent", 20)),
         "automatic_restarts": bool(g("automatic_restarts", True)),
-        "automatic_restart_window": int(g("automatic_restart_window", 15)),
+        "automatic_restart_window": int(g("automatic_restart_window", 60)),
 
         "pid_kp": kp, "pid_ki": ki, "pid_kd": kd,
 
@@ -298,12 +316,16 @@ def defaults_from_config(cfg=config):
         "sim_speedup_factor": int(g("sim_speedup_factor", 1)),
         "web_password": str(g("web_password", "")),
 
+        "tc_error_action": str(g("tc_error_action", "notify")),
+        "tc_error_stop_minutes": int(g("tc_error_stop_minutes", 5)),
+        "internal_error_action": str(g("internal_error_action", "notify")),
         "runaway_detect": bool(g("runaway_detect", True)),
-        "runaway_minutes": int(g("runaway_minutes", 10)),
-        "runaway_rise": delta("runaway_rise", 15.0),
-        "stall_detect": bool(g("stall_detect", True)),
-        "stall_minutes": int(g("stall_minutes", 30)),
-        "stall_rise": delta("stall_rise", 5.0),
+        "runaway_action": str(g("runaway_action", "notify")),
+        "runaway_minutes": int(g("runaway_minutes", 15)),
+        "runaway_rise": delta("runaway_rise", 20.0),
+        "stall_detect": bool(g("stall_detect", False)),
+        "stall_minutes": int(g("stall_minutes", 45)),
+        "stall_rise": delta("stall_rise", 3.0),
         "behind_schedule_minutes": int(g("behind_schedule_minutes", 60)),
         "gpio_contactor": _pin_number(g("gpio_contactor", None), -1),
         "gpio_contactor_invert": bool(g("gpio_contactor_invert", False)),
@@ -317,12 +339,15 @@ def defaults_from_config(cfg=config):
         "ct_on_threshold": float(g("ct_on_threshold", 2.0)),
         "mains_voltage": float(g("mains_voltage", 240.0)),
         "ct_prefire_check": bool(g("ct_prefire_check", True)),
+        "ct_prefire_on_schedule": bool(g("ct_prefire_on_schedule", True)),
         "ct_prefire_seconds": float(g("ct_prefire_seconds", 3.0)),
+        "ct_prefire_tries": int(g("ct_prefire_tries", 3)),
         "ct_prefire_action": str(g("ct_prefire_action", "stop")),
         "ct_detect_no_current": bool(g("ct_detect_no_current", True)),
-        "ct_no_current_seconds": int(g("ct_no_current_seconds", 30)),
-        "ct_no_current_action": str(g("ct_no_current_action", "stop")),
+        "ct_no_current_seconds": int(g("ct_no_current_seconds", 60)),
+        "ct_no_current_action": str(g("ct_no_current_action", "warn")),
         "ct_detect_stuck": bool(g("ct_detect_stuck", True)),
+        "ct_stuck_action": str(g("ct_stuck_action", "notify")),
         "ct_stuck_seconds": int(g("ct_stuck_seconds", 10)),
         "ct_low_amps": float(g("ct_low_amps", 0.0)),
         "ct_energy": bool(g("ct_energy", False)),
@@ -396,6 +421,19 @@ class Settings(object):
             if persist:
                 self.save()
 
+    def reset_to_defaults(self, keep=()):
+        '''forget the changes made in the UI (except the keys in keep), so
+        the defaults from config.py / this file apply again'''
+        with self._lock:
+            kept = {k: v for k, v in self._overrides.items() if k in keep}
+            dropped = sorted(k for k in self._overrides if k not in kept)
+            self._overrides = kept
+            self._values = dict(self._defaults)
+            self._values.update(kept)
+            self.save()
+        log.warning("settings reset to defaults: %s" % ", ".join(dropped))
+        return dropped
+
     def to_display(self):
         '''values for the settings UI in the current display scale'''
         scale = self.temp_scale
@@ -466,6 +504,14 @@ class Settings(object):
 
 
 SECRET_KEYS = [s[1] for s in SCHEMA if s[2] == "password"]
+
+# what "reset to defaults" keeps unless told otherwise: how this kiln is
+# wired and how to reach you, which no default can know
+HARDWARE_KEYS = sorted(set(
+    [s[1] for s in SCHEMA if s[0] in ("Sensor", "Hardware", "Notifications", "Updates")] +
+    ["ct_sensor", "ct_i2c_address", "ct_channel", "ct_adc_range", "ct_amps_per_volt", "mains_voltage",
+     "gpio_contactor", "gpio_contactor_invert", "gpio_heartbeat", "web_password", "simulate",
+     "temp_scale", "kw_elements", "kwh_rate", "currency_type", "pid_kp", "pid_ki", "pid_kd", "pid_tuned_at"]))
 
 
 def coerce(kind, raw, extra):
