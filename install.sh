@@ -83,9 +83,13 @@ if [ "${ARCH}" = "armv6l" ]; then
 fi
 
 say "Installing system packages"
-${SUDO} apt-get update -y
+# wait for other apt jobs (common right after first boot) instead of failing
+APT_WAIT="-o DPkg::Lock::Timeout=900"
+# shellcheck disable=SC2086
+${SUDO} apt-get $APT_WAIT update -y
 # gevent comes from apt: compiling it on a pi zero takes hours
-${SUDO} env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+# shellcheck disable=SC2086
+${SUDO} env DEBIAN_FRONTEND=noninteractive apt-get $APT_WAIT install -y \
     git python3 python3-venv python3-dev python3-pip python3-gevent \
     build-essential i2c-tools
 

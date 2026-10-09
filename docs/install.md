@@ -83,9 +83,33 @@ computer. A drive called **bootfs** appears.
 
 If anything goes wrong, the progress page says so and the full log is in
 `kiln-install.log` on the **bootfs** drive: put the card back in your
-computer to read it. Most failures are Wi-Fi (wrong password, 5 GHz
-network). Fix the setting in Imager and flash again, or SSH in and run the
-manual install below.
+computer to read it. If the install could not finish (usually no network),
+it tries again every time the Pi boots, so after fixing the problem just
+power-cycle the Pi.
+
+### Wi-Fi troubleshooting
+
+If the Pi never shows up on your network (no progress page, `kiln.local`
+not found, no SSH):
+
+- **Is there a `kiln-install.log` on bootfs?** If yes, the Pi booted and ran
+  the installer: the log ends with network diagnostics showing what the
+  Wi-Fi did. If there is no log, the Pi never got that far: check the image
+  is *Raspberry Pi OS Lite (32-bit)* (current, not "Legacy"), and that the
+  file is named exactly `vendor-data`.
+- **2.4 GHz only.** The Pi Zero W cannot see 5 GHz networks. On mesh routers
+  with one combined name this is usually fine; if not, enable a 2.4 GHz-only
+  network.
+- **WPA2, not WPA3-only.** The Pi Zero W's Wi-Fi chip does not support WPA3.
+  "WPA2/WPA3" mixed mode works; "WPA3 only" does not.
+- **Wi-Fi country** must be set in Imager's customisation, or the radio stays
+  switched off.
+- **Name and password are case sensitive.** Re-type them in Imager rather than
+  pasting, and flash again.
+- **`kiln.local` doesn't resolve** on some networks and older Windows: find the
+  Pi's IP address in your router's device list and use `http://<ip>:8081`.
+- Give it time: the very first boot of a Pi Zero takes a few minutes before
+  Wi-Fi comes up.
 
 ### How it works
 
@@ -93,9 +117,14 @@ Raspberry Pi OS (Trixie) uses **cloud-init** to apply Imager's settings on
 first boot. cloud-init reads its files from the boot partition: Imager writes
 `user-data`, `network-config` and `meta-data`, and cloud-init also reads an
 optional `vendor-data` file. Ours is a shell script, so it never clashes with
-Imager's settings. cloud-init runs it once, after the user and Wi-Fi exist.
-It waits for the network and clock, clones the repository, runs
-`install.sh` as root on behalf of your user, then reboots.
+Imager's settings.
+
+cloud-init runs vendor scripts *before* Imager's own first-boot commands
+(turning on SSH, setting up sudo, unblocking Wi-Fi in some setups), so our
+script only installs a one-shot `kiln-firstboot` service and exits at once.
+That service starts after cloud-init has finished: it waits for the network
+and the clock, clones the repository, runs `install.sh` as root on behalf of
+your user, and reboots. It retries on every boot until it succeeds.
 
 Older Raspberry Pi OS **Bookworm** images do not use cloud-init, so
 `vendor-data` is ignored there. Use the manual install.
