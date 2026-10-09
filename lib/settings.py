@@ -30,6 +30,10 @@ SENSOR_BOARDS = [
     ("max31865", "MAX31865 (PT100/PT1000 RTD, SPI - max ~850C!)"),
 ]
 TC_TYPES = ["B", "E", "J", "K", "N", "R", "S", "T"]
+# current sensor (lib/current.py imports settings, so these live here)
+CT_CHANNELS = [["diff_0_1", "A0 - A1 (differential, recommended)"], ["diff_2_3", "A2 - A3 (differential)"],
+               ["a0", "A0 (single ended)"], ["a1", "A1"], ["a2", "A2"], ["a3", "A3"]]
+CT_RANGES = [[4.096, "+/-4.096 V"], [2.048, "+/-2.048 V (for 1 V CTs)"], [1.024, "+/-1.024 V"], [0.512, "+/-0.512 V"]]
 # which thermocouple types each board can linearize
 BOARD_TC_TYPES = {
     "max31855": ["K"],
@@ -115,6 +119,43 @@ SCHEMA = [
         {"min": -1, "max": 27, "restart": True,
          "help": "Toggles every control cycle. An external watchdog relay can drop power if it stops."}),
 
+    ("Current sensor", "ct_sensor", "choice", "Current sensor (CT clamp)",
+        {"options": [["none", "None"], ["ads1115", "CT on an ADS1115 ADC (I2C)"]], "restart": True,
+         "help": "A clamp-on current transformer around one element wire. See docs/current-sensor.md."}),
+    ("Current sensor", "ct_i2c_address", "str", "ADS1115 I2C address", {"restart": True}),
+    ("Current sensor", "ct_channel", "choice", "ADS1115 input",
+        {"options": CT_CHANNELS, "restart": True}),
+    ("Current sensor", "ct_adc_range", "choice", "ADS1115 input range",
+        {"options": CT_RANGES, "restart": True}),
+    ("Current sensor", "ct_amps_per_volt", "float", "CT calibration (amps per volt RMS)",
+        {"min": 0.1, "max": 10000, "restart": True,
+         "help": "SCT-013-030: 30. SCT-013-050: 50. SCT-013-000 (100A:50mA) with a 33 ohm burden resistor: 60.6. "
+                 "Fine-tune with a clamp meter."}),
+    ("Current sensor", "ct_on_threshold", "float", "Elements count as on above (A)",
+        {"min": 0.1, "max": 100, "help": "Well above the reading with the elements off, well below the full element current."}),
+    ("Current sensor", "mains_voltage", "float", "Mains voltage at the elements (V)", {"min": 50, "max": 500}),
+    ("Current sensor", "ct_prefire_check", "bool", "Pre-fire check",
+        {"help": "When a firing or autotune starts, switch the elements on briefly and check that current flows."}),
+    ("Current sensor", "ct_prefire_seconds", "float", "Pre-fire check: pulse length (s)", {"min": 1, "max": 10}),
+    ("Current sensor", "ct_prefire_action", "choice", "Pre-fire check: if there is no current",
+        {"options": [["stop", "Do not start, send an alert"], ["warn", "Start anyway, send an alert"]]}),
+    ("Current sensor", "ct_detect_no_current", "bool", "Detect no current while firing",
+        {"help": "Elements switched on but no current: kiln switched off, breaker tripped, element or relay failed."}),
+    ("Current sensor", "ct_no_current_seconds", "int", "No current: after (seconds of on-time)", {"min": 5, "max": 600}),
+    ("Current sensor", "ct_no_current_action", "choice", "No current: action",
+        {"options": [["stop", "Stop the firing, send an alert"], ["warn", "Keep going, send an alert"]]}),
+    ("Current sensor", "ct_detect_stuck", "bool", "Detect current with the elements off (stuck relay)",
+        {"help": "Stops any firing, opens the safety contactor and sends an alarm. Much faster than the temperature-based check."}),
+    ("Current sensor", "ct_stuck_seconds", "int", "Stuck relay: after (seconds)", {"min": 2, "max": 300}),
+    ("Current sensor", "ct_low_amps", "float", "Warn if current while on is below (A, 0 = off)",
+        {"min": 0, "max": 200, "help": "Catches one failed element out of several. Set a bit below your normal reading."}),
+    ("Current sensor", "ct_energy", "bool", "Use measured current for energy and cost",
+        {"help": "kWh = mains voltage x measured amps x on-time, instead of the element power setting."}),
+
+    ("Updates", "update_repo_url", "str", "Update from repository",
+        {"maxlen": 200, "help": "A git URL, e.g. https://github.com/adman234/kiln-controller"}),
+    ("Updates", "update_branch", "str", "Branch", {"maxlen": 100}),
+
     ("Notifications", "notify_service", "choice", "Send alerts with",
         {"options": [["none", "Nothing"], ["ntfy", "ntfy (free phone app)"], ["pushover", "Pushover"],
                      ["webhook", "Webhook (Slack, Discord, Home Assistant...)"]]}),
@@ -144,6 +185,8 @@ SCHEMA = [
 ]
 
 SCHEMA_BY_KEY = {s[1]: s for s in SCHEMA}
+
+DEFAULT_REPO_URL = "https://github.com/adman234/kiln-controller"
 
 # values that are not shown in the UI but still live in settings
 HIDDEN_DEFAULTS = {
@@ -265,6 +308,27 @@ def defaults_from_config(cfg=config):
         "gpio_contactor": _pin_number(g("gpio_contactor", None), -1),
         "gpio_contactor_invert": bool(g("gpio_contactor_invert", False)),
         "gpio_heartbeat": _pin_number(g("gpio_heartbeat", None), -1),
+
+        "ct_sensor": str(g("ct_sensor", "none")),
+        "ct_i2c_address": str(g("ct_i2c_address", "0x48")),
+        "ct_channel": str(g("ct_channel", "diff_0_1")),
+        "ct_adc_range": float(g("ct_adc_range", 2.048)),
+        "ct_amps_per_volt": float(g("ct_amps_per_volt", 30.0)),
+        "ct_on_threshold": float(g("ct_on_threshold", 2.0)),
+        "mains_voltage": float(g("mains_voltage", 240.0)),
+        "ct_prefire_check": bool(g("ct_prefire_check", True)),
+        "ct_prefire_seconds": float(g("ct_prefire_seconds", 3.0)),
+        "ct_prefire_action": str(g("ct_prefire_action", "stop")),
+        "ct_detect_no_current": bool(g("ct_detect_no_current", True)),
+        "ct_no_current_seconds": int(g("ct_no_current_seconds", 30)),
+        "ct_no_current_action": str(g("ct_no_current_action", "stop")),
+        "ct_detect_stuck": bool(g("ct_detect_stuck", True)),
+        "ct_stuck_seconds": int(g("ct_stuck_seconds", 10)),
+        "ct_low_amps": float(g("ct_low_amps", 0.0)),
+        "ct_energy": bool(g("ct_energy", False)),
+
+        "update_repo_url": str(g("update_repo_url", DEFAULT_REPO_URL)),
+        "update_branch": str(g("update_branch", "main")),
 
         "notify_service": str(g("notify_service", "none")),
         "notify_url": str(g("notify_url", "")),

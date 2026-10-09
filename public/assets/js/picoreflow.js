@@ -689,6 +689,7 @@ function openSettings(tab) {
         renderRecentAlerts(resp.notifications);
         renderAutotune(lastStatus ? lastStatus.autotune : null);
         loadHistory();
+        loadUpdateInfo();
         $('#restart_banner').hide();
         $('#settings_msg').text("");
         $('#settingsModal').modal('show');
@@ -742,7 +743,7 @@ function renderSettings() {
         $(this).html(html + '</div>');
     });
     $('#pid_tuned_at').text(v.pid_tuned_at ? "Last autotuned " + fmtDate(v.pid_tuned_at) : "PID values have not been autotuned yet.");
-    $('#set_sensor_board, #set_spi_mode, #set_notify_service').on('change', updateSettingsVisibility);
+    $('#set_sensor_board, #set_spi_mode, #set_notify_service, #set_ct_sensor').on('change', updateSettingsVisibility);
     updateSettingsVisibility();
 
     $('.at-unit').html(deg());
@@ -774,6 +775,10 @@ function updateSettingsVisibility() {
     showRow("spi_mode", !isI2C);
     showRow("spi_cs", !isI2C);
     $.each(["spi_sclk", "spi_miso", "spi_mosi"], function (_, k) { showRow(k, !isI2C && spi == "software"); });
+    var ct = $('#set_ct_sensor').val() != "none";
+    $.each(settingsData.schema, function (_, item) {
+        if (item.group == "Current sensor" && item.key != "ct_sensor") showRow(item.key, ct);
+    });
 }
 
 function collectSettings() {
@@ -1000,6 +1005,8 @@ function refreshDiagnostics() {
                     y.undervoltage_since_boot ? '<span class="label label-warning">under-voltage since boot</span>' : '<span class="text-success">OK</span>')) +
                row("Python", esc(y.python)) + row("Time", esc(y.time));
         $('#diag_system').html(html);
+        $('#diag_current_box').toggle(!!d.current);
+        if (d.current) $('#diag_current').html(currentRows(d.current));
         if (s.recent_errors.length) {
             html = '<table class="table table-condensed"><tr><th>Time</th><th>Error</th><th>Raw</th><th>Ignored</th></tr>';
             $.each(s.recent_errors.slice().reverse(), function (_, e) {
@@ -1012,6 +1019,19 @@ function refreshDiagnostics() {
     });
 }
 
+function currentRows(c) {
+    var a = function (v) { return v === null || v === undefined ? "&ndash;" : Number(v).toFixed(1) + " A"; };
+    var ago = function (t) { return t ? " (" + fmtHM(Date.now() / 1000 - t) + " ago)" : ""; };
+    var html = row("Status", c.enabled ? '<span class="text-success">reading</span>' : '<span class="label label-danger">not working</span>') +
+               (c.error ? row("Error", esc(c.error)) : "");
+    if (c.last) html += row("Last reading", a(c.last.amps) + " with the elements " + (c.last.heater_on ? "ON" : "off") + ago(c.last.time));
+    html += row("Last reading with elements on", a(c.on_amps)) +
+            row("Counts as on above", a(c.threshold));
+    if (c.prefire) html += row("Last pre-fire check", (c.prefire.ok ? '<span class="text-success">passed</span> ' : '<span class="text-danger">FAILED</span> ') +
+                              a(c.prefire.amps) + ago(c.prefire.time));
+    return html;
+}
+
 function relayTest() {
     var secs = parseFloat($('#relay_secs').val());
     confirmAction("Test relay?", "This turns the kiln elements <b>ON for " + secs + " seconds</b>.", "Turn on", function () {
@@ -1019,6 +1039,71 @@ function relayTest() {
             .done(function () { notify("Relay on for " + secs + "s", "warning", 3000); })
             .fail(fail("Relay test failed"));
     });
+}
+
+// ---------------------------------------------------------------------
+// software update
+
+var updateTimer = null;
+
+function loadUpdateInfo() {
+    return apiGet("/api/update").done(renderUpdate);
+}
+
+function renderUpdate(u) {
+    var v = u.version || {};
+    $('#update_version').html(v.error ? '<span class="text-danger">' + esc(v.error) + '</span>' :
+        'Running <b>' + esc(v.short) + '</b> (' + esc(v.date) + ') on branch <b>' + esc(v.branch) + '</b> from ' + esc(v.remote || "?") +
+        '<br><span class="text-muted">' + esc(v.subject) + '</span>' +
+        (v.local_changes && v.local_changes.length ? '<br><span class="text-warning">Changed on this kiln: ' + esc(v.local_changes.join(", ")) + '</span>' : ''));
+    $('#update_force_label').toggle(!!(v.local_changes && v.local_changes.length));
+    $('#btn_update_rollback').toggle(!!u.previous).attr('title', u.previous ? "Go back to " + u.previous.commit.substr(0, 7) : "");
+    $('#btn_update_check, #btn_update_install, #btn_update_rollback').prop('disabled', u.busy);
+    var cls = u.status == "error" ? "text-danger" : u.status == "done" ? "text-success" : "";
+    var html = u.busy ? '<span class="glyphicon glyphicon-refresh"></span> ' + (u.status == "checking" ? "Checking&hellip;" : "Updating&hellip; this can take a while on a Pi Zero.") : '';
+    if (u.message) html += '<span class="' + cls + '">' + esc(u.message) + '</span>';
+    if (u.check && !u.check.up_to_date && u.status == "checked") {
+        html += '<ul>' + $.map(u.check.commits, function (c) { return '<li>' + esc(c.date) + ' ' + esc(c.subject) + '</li>'; }).join("") + '</ul>';
+    }
+    $('#update_status').html(html);
+    $('#update_log').text((u.log || []).join("\n")).toggle(!!(u.log && u.log.length));
+    var $log = $('#update_log')[0];
+    if ($log) $log.scrollTop = $log.scrollHeight;
+    clearTimeout(updateTimer);
+    if (u.busy) updateTimer = setTimeout(loadUpdateInfo, 2000);
+    if (u.status == "done") waitForRestart();
+}
+
+function waitForRestart() {
+    if (window.kcRestarting) return;
+    window.kcRestarting = true;
+    notify("Update installed. The controller is restarting&hellip;", "info", 0);
+    var tries = 0;
+    var poll = function () {
+        tries++;
+        $.ajax({ url: "/api/config", timeout: 3000 }).done(function () {
+            if (tries > 3) window.location.reload();
+            else setTimeout(poll, 4000);
+        }).fail(function () { setTimeout(poll, 4000); });
+    };
+    setTimeout(poll, 6000);
+}
+
+function updateAction(action) {
+    var body = { action: action, repo_url: $('#set_update_repo_url').val(), branch: $('#set_update_branch').val(),
+                 force: $('#update_force').is(':checked') };
+    var go = function () {
+        apiPost("/api/update", body).done(function () {
+            $('#update_status').html('<span class="glyphicon glyphicon-refresh"></span> Working&hellip;');
+            setTimeout(loadUpdateInfo, 500);
+        }).fail(fail(action == "check" ? "Could not check for updates" : "Could not update"));
+    };
+    if (action == "check") { go(); return; }
+    var title = action == "install" ? "Install update?" : "Roll back?";
+    var text = action == "install" ?
+        "Install <b>" + esc(body.branch) + "</b> from " + esc(body.repo_url) + " and restart the controller. The kiln must be idle." :
+        "Go back to the version that was running before the last update, and restart the controller.";
+    confirmAction(title, text, action == "install" ? "Install" : "Roll back", go);
 }
 
 // ---------------------------------------------------------------------
@@ -1159,6 +1244,8 @@ function handleStatus(x) {
     if (heat_rate < -9999) heat_rate = -9999;
     $('#heat_rate').html(isNaN(heat_rate) ? "---" : heat_rate);
     $('#heat').html('<div class="bar" style="height:' + Math.round((x.output || 0) * 100) + '%;"></div>');
+    if (x.current && x.current.last) $('#amps').text(Number(x.current.last.amps).toFixed(1) + " A").show();
+    else $('#amps').hide();
     if (x.temperature > hazardTemp()) $('#hazard').addClass("ds-led-hazard-active");
     else $('#hazard').removeClass("ds-led-hazard-active");
 

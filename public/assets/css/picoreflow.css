@@ -447,3 +447,7 @@ body {
 .start-when input[type=time].form-control {
     width: 120px;
 }
+
+/* element current under the power LED */
+.ds-amps { color: #ddd; font-size: 13px; text-align: center; margin-top: 2px; white-space: nowrap; }
+.update-log { max-height: 220px; overflow-y: auto; white-space: pre-wrap; margin-top: 6px; }

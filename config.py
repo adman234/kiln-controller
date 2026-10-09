@@ -54,7 +54,7 @@ gpio_heat_invert = False  # invert the output state
 #   max6675  - K type only, older chip
 #   mcp9600  - B, E, J, K, N, R, S, T thermocouples (I2C on SDA/SCL)
 #   max31865 - PT100/PT1000 RTD (only good to ~850C)
-sensor_board = "max31855"
+sensor_board = "max6675"
 thermocouple_type = "K"
 
 # MCP9600 I2C address, RTD settings for MAX31865

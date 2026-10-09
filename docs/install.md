@@ -179,8 +179,12 @@ Reboot once if SPI was just enabled: `sudo reboot`.
 - System log capped at 50MB (or kept in RAM with `--protect-sd`).
 - Wi-Fi power saving off (it makes a Zero's web page very sluggish).
 
-To update later, run `./install.sh` again from the `kiln-controller`
-directory, with the same options. Settings and schedules (in `storage/`)
+To update later, use *Settings &rarr; Advanced &rarr; Software update* in
+the web UI. You can choose the repository and branch there, and roll back if
+something goes wrong. Or run `./install.sh` again from the `kiln-controller`
+directory, with the same options; that also applies system-level changes
+(the service file, apt packages), which the web update can't do. The web
+update tells you when it's needed. Settings and schedules (in `storage/`)
 are kept. Use *Settings &rarr; Advanced &rarr; Download backup* before big
 changes.
 

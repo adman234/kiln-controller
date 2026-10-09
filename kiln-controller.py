@@ -43,6 +43,7 @@ from history import RunHistory
 from oven import SimulatedOven, RealOven
 from ovenWatcher import OvenWatcher
 from notify import notifier
+from updater import Updater, UpdateError
 import autotune
 import sdnotify
 
@@ -227,6 +228,14 @@ def restart_process():
     os._exit(0)
 
 
+updater = Updater(restart=lambda: gevent.spawn_later(3.0, restart_process))
+
+
+def refuse_while_updating():
+    if updater.busy and updater.status == "updating":
+        raise ApiError("a software update is being installed, wait for it to finish")
+
+
 # ---------------------------------------------------------------------
 # REST API
 @app.get('/api/stats')
@@ -250,6 +259,9 @@ def handle_api():
     body = json_body()
     cmd = body.get("cmd")
     log.info("/api command %s" % cmd)
+
+    if cmd in ('run', 'schedule', 'autotune_start', 'relay_test'):
+        refuse_while_updating()
 
     if cmd == 'run':
         wanted = body.get('profile')
@@ -522,6 +534,45 @@ def api_settings_save():
             "errors": errors, "values": settings.to_display()}
 
 
+@app.get('/api/update')
+@api
+def api_update_info():
+    info = updater.info()
+    info["repo_url"] = settings.update_repo_url
+    info["branch"] = settings.update_branch
+    return info
+
+
+@app.post('/api/update')
+@api
+def api_update():
+    '''body: {"action": "check" | "install" | "rollback", "repo_url", "branch", "force"}'''
+    body = json_body()
+    action = body.get("action")
+    # installing code is as powerful as SSH access
+    if request_is_remote() and not settings.web_password:
+        raise ApiError("set a web UI password before updating over the internet", 403)
+    repo_url = (body.get("repo_url") or settings.update_repo_url or "").strip()
+    branch = (body.get("branch") or settings.update_branch or "main").strip()
+    try:
+        if action == "check":
+            updater.check(repo_url, branch)
+        elif action in ("install", "rollback"):
+            if oven.state != "IDLE":
+                raise ApiError("stop the kiln (and cancel any delayed start) before updating")
+            if action == "install":
+                updater.install(repo_url, branch, force=bool(body.get("force")))
+                if (repo_url, branch) != (settings.update_repo_url, settings.update_branch):
+                    settings.update_from_display({"update_repo_url": repo_url, "update_branch": branch})
+            else:
+                updater.rollback()
+        else:
+            raise ApiError("unknown action %r" % (action,))
+    except UpdateError as e:
+        raise ApiError(str(e))
+    return {"success": True, "status": updater.status}
+
+
 def read_first_line(path):
     try:
         with open(path) as f:
@@ -577,6 +628,7 @@ def api_diagnostics():
     for k in ("temperature_c", "last_raw_c", "cold_junction_c"):
         d[k[:-2]] = to_display(d.get(k), scale) if d.get(k) is not None else None
     return {"sensor": d, "system": system_info(), "state": oven.state, "temp_scale": scale,
+            "current": oven.ct_status(),
             "settings": {"sensor_board": settings.sensor_board, "thermocouple_type": settings.thermocouple_type,
                          "spi_mode": settings.spi_mode, "gpio_heat": settings.gpio_heat,
                          "simulate": settings.simulate}}

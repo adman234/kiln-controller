@@ -17,6 +17,10 @@
   "currency_type": "$",
   "emergency_shutoff_temp": 2264,
 
+  "ct_sensor": "none",
+  "ct_amps_per_volt": 30,
+  "mains_voltage": 240,
+
   "notify_service": "ntfy",
   "notify_url": "https://ntfy.sh/replace-with-a-long-random-topic-name",
 
