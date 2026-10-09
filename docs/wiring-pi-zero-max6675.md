@@ -74,9 +74,13 @@ easy to mix up with BCM numbers.
 
 This works if the MOSFET is **logic-level at 3.3 V**: its Rds(on) is
 specified at Vgs = 2.5 V or 4.5 V, and its Vgs(th) is under about 2 V.
-AO3400 and AOD4184 boards are suitable. IRF520 "Arduino" modules are
-**not**: they need 5 to 10 V on the gate, and at 3.3 V they turn on partly
-or not at all.
+AO3400 and AOD4184 boards are suitable.
+
+**IRF520 / IRF520N modules** (pins SIG, VCC, GND plus VIN/GND and V+/V−
+screw terminals) are **not** suitable. The IRF520N's gate threshold is
+2 to 4 V, and its on-resistance is only specified at 10 V. From a 3.3 V pin,
+some boards switch the SSRs and others don't, and the result can change with
+temperature. The 2N2222A circuit above does the job reliably.
 
 ```
  Pi 5V ───────────────── SSR + (all SSRs)
