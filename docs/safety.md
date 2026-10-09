@@ -19,6 +19,7 @@ wiring mains voltage, have an electrician do it.
 | Sensor errors | Too many failed thermocouple readings | Firing stopped, alert (also alerts while idle) |
 | **Stuck relay detection** | Kiln keeps heating for 10 min with the elements commanded off (works while idle too) | Firing stopped, **contactor opened**, urgent alert |
 | **No-heat detection** | Elements fully on for 30 min but the kiln does not warm up: thermocouple fell out of the kiln, broken element, failed relay, or a kiln at its limit | Firing stopped, urgent alert |
+| Current sensor (optional) | With a [CT clamp](current-sensor.md): no current at the pre-fire check or while the elements are on, or current with them off (stuck SSR within seconds) | Firing not started / stopped, contactor opened, alert. Each check can be switched off in *Settings &rarr; Current* |
 | Behind schedule | The kiln can't keep up with the schedule for 60 min | Alert (often worn elements) |
 | Crash protection | A bug in the control loop | Elements off, firing stopped, error shown |
 | Service watchdog | The controller hangs | systemd restarts it after 90 s; the relay is forced off in between |

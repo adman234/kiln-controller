@@ -382,3 +382,175 @@ def test_event_listeners_get_backlog_then_updates(sim):
     # a client that stops reading is dropped instead of blocking the kiln
     w.notify_all(sim.get_state()); w.notify_all(sim.get_state()); w.notify_all(sim.get_state())
     assert q not in w.listeners
+
+
+# ------------------------------------------------------------ current sensor
+@pytest.fixture
+def ct_sim(tmp_path, monkeypatch):
+    monkeypatch.setattr(oven_mod, "SCHEDULE_FILE", str(tmp_path / "scheduled.json"))
+    for k, v in {"sim_speedup_factor": 100000, "automatic_restarts": False,
+                 "ct_sensor": "ads1115"}.items():
+        monkeypatch.setitem(settings._values, k, v)
+    st = ProfileStore(str(tmp_path / "profiles"))
+    st.save({"name": "long", "temp_units": "c", "data": [[0, 20], [7200, 1000], [9000, 1000]]})
+    import notify
+    alarms = []
+    monkeypatch.setattr(notify.notifier, "send", lambda *a, **k: alarms.append(a) or True)
+    o = oven_mod.SimulatedOven(store=st, history=RunHistory(str(tmp_path / "h.json")))
+    o.alarms = alarms
+    return o
+
+
+def test_rms_removes_dc_bias():
+    from current import rms
+    wave = [1.65 + math.sin(2 * math.pi * i / 50) for i in range(500)]
+    assert abs(rms(wave) - 1 / math.sqrt(2)) < 0.01
+
+
+def test_prefire_check_passes(ct_sim):
+    ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
+    assert ct_sim.prefire_pending
+    ct_sim.tick()
+    assert ct_sim.state == "RUNNING" and ct_sim.prefire["ok"] and ct_sim.prefire["amps"] > 30
+
+
+def test_prefire_check_stops_when_kiln_unplugged(ct_sim):
+    ct_sim.ct.fault = "no_current"
+    ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
+    ct_sim.tick()
+    assert ct_sim.state == "IDLE" and "Pre-fire" in ct_sim.last_error
+    assert any(a[0] == "Kiln did not start" for a in ct_sim.alarms)
+
+
+def test_prefire_check_warn_only_and_disabled(ct_sim, monkeypatch):
+    ct_sim.ct.fault = "no_current"
+    monkeypatch.setitem(settings._values, "ct_prefire_action", "warn")
+    monkeypatch.setitem(settings._values, "ct_detect_no_current", False)
+    ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
+    for _ in range(100):
+        ct_sim.tick()
+    assert ct_sim.state == "RUNNING" and not ct_sim.prefire["ok"]
+    ct_sim.abort_run()
+    monkeypatch.setitem(settings._values, "ct_prefire_check", False)
+    ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
+    assert not ct_sim.prefire_pending
+
+
+def test_no_current_while_firing_stops_run(ct_sim, monkeypatch):
+    ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
+    for _ in range(20):
+        ct_sim.tick()
+    assert ct_sim.state == "RUNNING"
+    ct_sim.ct.fault = "no_current"      # breaker trips mid-firing
+    assert _run_until(ct_sim, lambda: ct_sim.state != "RUNNING", 200)
+    assert "no current" in ct_sim.last_error
+    # warn only keeps going
+    ct_sim.ct.fault = None
+    monkeypatch.setitem(settings._values, "ct_no_current_action", "warn")
+    ct_sim.last_error = None
+    ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
+    for _ in range(5):
+        ct_sim.tick()
+    ct_sim.ct.fault = "no_current"
+    for _ in range(100):
+        ct_sim.tick()
+    assert ct_sim.state == "RUNNING"
+    assert any(a[0] == "Kiln not drawing power" for a in ct_sim.alarms)
+
+
+def test_stuck_relay_detected_by_current_while_idle(ct_sim, monkeypatch):
+    ct_sim.ct.fault = "stuck"
+    assert _run_until(ct_sim, lambda: ct_sim.last_error, 100)
+    assert "stuck" in ct_sim.last_error
+    assert any(a[0] == "KILN ALARM" for a in ct_sim.alarms)
+    # can be switched off
+    ct_sim.last_error = None
+    monkeypatch.setitem(settings._values, "ct_detect_stuck", False)
+    for _ in range(100):
+        ct_sim.tick()
+    assert ct_sim.last_error is None
+
+
+def test_measured_current_used_for_energy(ct_sim, monkeypatch):
+    monkeypatch.setitem(settings._values, "ct_energy", True)
+    ct_sim.ct.amps = 10.0                # 2.4 kW at 240 V instead of the nameplate
+    ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
+    for _ in range(50):
+        ct_sim.tick()
+    assert ct_sim.heat_on_total > 0
+    assert abs(ct_sim.kwh - 2.4 * ct_sim.heat_on_total / 3600) < 1e-6
+    assert ct_sim.get_state()["current"]["on_amps"] == 10.0
+
+
+def test_low_current_warning():
+    from current import CurrentMonitor
+    m = CurrentMonitor()
+    old = settings._values["ct_low_amps"]
+    settings._values["ct_low_amps"] = 30
+    try:
+        assert m.add(20, True, 0, True) is None
+        kind, msg = m.add(20, True, 61, True)
+        assert kind == "low_current"
+        assert m.add(20, True, 200, True) is None   # only once
+    finally:
+        settings._values["ct_low_amps"] = old
+
+
+# ------------------------------------------------------------------ updater
+def _git(cwd, *args):
+    import subprocess
+    subprocess.run(["git", "-C", str(cwd)] + list(args), check=True, capture_output=True,
+                   env=dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+                            GIT_COMMITTER_EMAIL="t@t"))
+
+
+def _commit(repo, files, msg):
+    for name, text in files.items():
+        p = repo / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", msg)
+
+
+def test_updater_check_install_rollback(tmp_path, monkeypatch):
+    import re
+    import updater as up
+    monkeypatch.setattr(up, "URL_RE", re.compile(r"^/.+"))
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    _git(upstream, "init", "-q", "-b", "main")
+    _commit(upstream, {"kiln-controller.py": "x = 1\n", "lib/a.py": "a = 1\n", "requirements.txt": "",
+                       "config.py": "c = 1\n"}, "first")
+    kiln = tmp_path / "kiln"
+    _git(tmp_path, "clone", "-q", str(upstream), str(kiln))
+    _commit(upstream, {"lib/a.py": "a = 2\n"}, "second")
+    _git(upstream, "checkout", "-q", "-b", "broken")
+    _commit(upstream, {"lib/a.py": "a = (\n"}, "broken")
+    _git(upstream, "checkout", "-q", "main")
+
+    restarts = []
+    u = up.Updater(repo_dir=str(kiln), state_file=str(tmp_path / "update.json"),
+                   restart=lambda: restarts.append(1))
+    res = u.check(str(upstream), "main", wait=True)
+    assert not res["up_to_date"] and res["fast_forward"] and res["commits"][0]["subject"] == "second"
+
+    # a local edit blocks the update unless forced
+    (kiln / "config.py").write_text("c = 2\n")
+    with pytest.raises(up.UpdateError):
+        u.install(str(upstream), "main", wait=True)
+    u.install(str(upstream), "main", force=True, wait=True)
+    assert (kiln / "lib/a.py").read_text() == "a = 2\n" and restarts == [1]
+    assert u.read_state()["previous"]["commit"]
+
+    # code that does not compile is not kept
+    with pytest.raises(up.UpdateError):
+        u.install(str(upstream), "broken", wait=True)
+    assert (kiln / "lib/a.py").read_text() == "a = 2\n"
+
+    u.rollback(wait=True)
+    assert (kiln / "lib/a.py").read_text() == "a = 1\n" and restarts == [1, 1]
+    with pytest.raises(up.UpdateError):
+        up.validate("https://github.com/x/y; rm -rf /", "main")
+    with pytest.raises(up.UpdateError):
+        up.validate("https://github.com/x/y", "--upload-pack=evil")
