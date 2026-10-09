@@ -21,6 +21,7 @@ Turns a Raspberry Pi into an inexpensive, web-enabled kiln controller.
   * schedule editor with ramp rates, holds, minutes/hours/h:mm and a quick "ramp to, hold" builder
   * delayed start ("start in 6 hours" / "start at 5:00 am") from the web UI
   * optional password, protection against other web pages controlling your kiln
+  * wiring example for Pi Zero W + MAX6675 + SSRs: [docs/wiring-pi-zero-max6675.md](docs/wiring-pi-zero-max6675.md)
   * safety: stuck relay and no-heat detection, safety contactor and watchdog outputs, systemd and hardware watchdogs ([docs/safety.md](docs/safety.md))
   * phone alerts via ntfy, Pushover or webhooks (Slack, Discord, Home Assistant)
   * backup and restore, schedule import/export
