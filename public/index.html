@@ -304,6 +304,13 @@
        <pre id="update_log" class="small update-log" style="display:none"></pre>
        <p class="help-block small">Downloads the branch from the repository, installs new Python packages if needed and restarts the controller.
         Only while the kiln is idle. Settings and schedules are kept. Changes to system files (the service, apt packages) still need <code>./install.sh</code> over SSH; the update says so when that is the case.</p>
+       <h4>Reset settings</h4>
+       <p class="small">Go back to the default settings that came with this version of the software (after an update, the new defaults).
+        Schedules and firing history are not touched.</p>
+       <div class="inline-tools">
+        <button type="button" class="btn btn-danger btn-sm" onclick="resetSettings()"><span class="glyphicon glyphicon-repeat"></span> Reset to defaults&hellip;</button>
+        <label class="small"><input type="checkbox" id="reset_keep_hw" checked> keep wiring, sensor, current sensor, alerts, password, units, cost and PID values</label>
+       </div>
        <h4>Backup</h4>
        <p class="small">One file with your settings, schedules and firing history. Passwords and tokens are not included.</p>
        <div class="inline-tools">

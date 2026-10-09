@@ -15,17 +15,18 @@ wiring mains voltage, have an electrician do it.
 
 | Protection | What it catches | What happens |
 | --- | --- | --- |
-| Emergency temperature | Kiln reaches *Emergency shutoff temperature* | Firing stopped, elements off, contactor opened, alert |
-| Sensor errors | Too many failed thermocouple readings | Firing stopped, alert (also alerts while idle) |
-| **Stuck relay detection** | Kiln keeps heating for 10 min with the elements commanded off (works while idle too) | Firing stopped, **contactor opened**, urgent alert |
-| **No-heat detection** | Elements fully on for 30 min but the kiln does not warm up: thermocouple fell out of the kiln, broken element, failed relay, or a kiln at its limit | Firing stopped, urgent alert |
+| Emergency temperature | Kiln reaches *Emergency shutoff temperature* (default 2350&deg;F / 1288&deg;C, room for casting gold, silver, copper and aluminium bronze) | Firing stopped, elements off, contactor opened, alert |
+| **No trustworthy temperature** | Thermocouple errors (more than 30% of recent reads), no good reading for 10 s, or a MAX6675 stuck at its 1023&deg;C limit | Treated like "too hot": **elements held off** and the schedule waits. Alert after 30 s, and again when readings come back. Optionally stop after N minutes |
+| **Stuck relay detection** | Kiln rises 20&deg;C (36&deg;F) in 15 min with the elements commanded off (works while idle too) | Urgent alert. Optionally stop the firing (and open a contactor if you have one) |
+| No-heat detection (off by default) | Elements fully on for 45 min but the kiln does not warm up: thermocouple out of the kiln, broken element, failed relay, or a kiln at its limit | Firing stopped, urgent alert |
+| Software error | A bug or unexpected hardware error in one control cycle | Elements off for that cycle, alert, firing continues (optionally stop) |
 | Current sensor (optional) | With a [CT clamp](current-sensor.md): no current at the pre-fire check or while the elements are on, or current with them off (stuck SSR within seconds) | Firing not started / stopped, contactor opened, alert. Each check can be switched off in *Settings &rarr; Current* |
 | Behind schedule | The kiln can't keep up with the schedule for 60 min | Alert (often worn elements) |
 | Crash protection | A bug in the control loop | Elements off, firing stopped, error shown |
 | Service watchdog | The controller hangs | systemd restarts it after 90 s; the relay is forced off in between |
 | Hardware watchdog | The whole Pi locks up | The Pi reboots after 15 s |
 | Relay-off on start/stop | Service stopped, crashed or restarted | The relay output is driven off before start and after stop |
-| Power-failure resume | Power returns within 15 min (configurable) | The firing continues where it was |
+| Power-failure resume | Power returns within 60 min (configurable) | The firing continues where it was |
 
 All thresholds are in *Settings &rarr; Safety &amp; Alerts*. Alerts go to your
 phone through ntfy, Pushover or a webhook (Slack, Discord, Home Assistant

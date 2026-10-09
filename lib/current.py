@@ -126,8 +126,10 @@ class CurrentMonitor(object):
         self.stuck_since = None
         self.low_since = None
         self.low_warned = False
+        self.no_current_alerted = False
 
-    def add(self, amps, heater_on, now, running):
+    def add(self, amps, heater_on, now, running, normal_amps=None):
+        '''normal_amps: the usual current with the elements on, if known'''
         if amps is None:
             return None
         threshold = settings.ct_on_threshold
@@ -135,17 +137,21 @@ class CurrentMonitor(object):
         if heater_on:
             if amps < threshold:
                 self.low_since = None
-                if not (running and settings.ct_detect_no_current):
+                if not (running and settings.ct_detect_no_current) or self.no_current_alerted:
                     self.no_current_since = None
                     return None
                 if self.no_current_since is None:
                     self.no_current_since = now
                 if now - self.no_current_since >= settings.ct_no_current_seconds:
                     self.no_current_since = None
+                    self.no_current_alerted = True
                     return ("no_current", "The elements are switched on but no current flows (%.1f A). "
                             "Kiln unplugged, breaker or kiln switch off, or an element or relay failed." % amps)
                 return None
             self.no_current_since = None
+            if self.no_current_alerted:
+                self.no_current_alerted = False
+                return ("current_back", "Current is flowing again (%.1f A)." % amps)
             low = settings.ct_low_amps
             if running and low and amps < low and not self.low_warned:
                 if self.low_since is None:
@@ -158,6 +164,11 @@ class CurrentMonitor(object):
                 self.low_since = None
             return None
 
+        # a stuck SSR passes the full element current. A loose or unplugged
+        # CT picking up hum reads far less, so once the normal current is
+        # known only half of it or more counts.
+        if normal_amps:
+            threshold = max(threshold, 0.5 * normal_amps)
         if amps < threshold or not settings.ct_detect_stuck:
             self.stuck_since = None
             return None

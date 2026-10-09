@@ -324,7 +324,8 @@ def test_runaway_detected_when_relay_stuck(sim):
     assert alarms and alarms[0][0] == "KILN ALARM"
 
 
-def test_stall_detected_when_thermocouple_falls_out(sim):
+def test_stall_detected_when_thermocouple_falls_out(sim, monkeypatch):
+    monkeypatch.setitem(settings._values, "stall_detect", True)   # off by default
     sim.store.save({"name": "long", "temp_units": "c", "data": [[0, 400], [36000, 1200]]})
     monkey_temp = [25.0]
     sim.current_temp = lambda: monkey_temp[0]   # reads room temperature forever
@@ -418,7 +419,9 @@ def test_prefire_check_stops_when_kiln_unplugged(ct_sim):
     ct_sim.ct.fault = "no_current"
     ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
     ct_sim.tick()
-    assert ct_sim.state == "IDLE" and "Pre-fire" in ct_sim.last_error
+    assert ct_sim.state == "RUNNING" and ct_sim.prefire["pending"]   # tries again first
+    assert _run_until(ct_sim, lambda: ct_sim.state != "RUNNING", 100)
+    assert ct_sim.state == "IDLE" and "Pre-fire" in ct_sim.last_error and ct_sim.prefire["try"] == 3
     assert any(a[0] == "Kiln did not start" for a in ct_sim.alarms)
 
 
@@ -437,6 +440,7 @@ def test_prefire_check_warn_only_and_disabled(ct_sim, monkeypatch):
 
 
 def test_no_current_while_firing_stops_run(ct_sim, monkeypatch):
+    monkeypatch.setitem(settings._values, "ct_no_current_action", "stop")
     ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
     for _ in range(20):
         ct_sim.tick()
@@ -448,14 +452,19 @@ def test_no_current_while_firing_stops_run(ct_sim, monkeypatch):
     ct_sim.ct.fault = None
     monkeypatch.setitem(settings._values, "ct_no_current_action", "warn")
     ct_sim.last_error = None
+    del ct_sim.alarms[:]
     ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
     for _ in range(5):
         ct_sim.tick()
     ct_sim.ct.fault = "no_current"
+    # (the kiln is still warm from above, so wait until the elements are asked to heat)
+    assert _run_until(ct_sim, lambda: any(a[0] == "Kiln not drawing power" for a in ct_sim.alarms), 3000)
     for _ in range(100):
         ct_sim.tick()
     assert ct_sim.state == "RUNNING"
-    assert any(a[0] == "Kiln not drawing power" for a in ct_sim.alarms)
+    assert [a[0] for a in ct_sim.alarms].count("Kiln not drawing power") == 1   # once, not every minute
+    ct_sim.ct.fault = None
+    assert _run_until(ct_sim, lambda: any(a[0] == "Kiln drawing power again" for a in ct_sim.alarms), 500)
 
 
 def test_stuck_relay_detected_by_current_while_idle(ct_sim, monkeypatch):
@@ -554,3 +563,160 @@ def test_updater_check_install_rollback(tmp_path, monkeypatch):
         up.validate("https://github.com/x/y; rm -rf /", "main")
     with pytest.raises(up.UpdateError):
         up.validate("https://github.com/x/y", "--upload-pack=evil")
+
+
+def test_prefire_check_when_delayed_start_is_set(ct_sim):
+    import time
+    ct_sim.ct.fault = "no_current"
+    ct_sim.schedule_profile("long", time.time() + 3600)
+    assert ct_sim.state == "SCHEDULED" and ct_sim.prefire_pending
+    assert _run_until(ct_sim, lambda: ct_sim.state != "SCHEDULED", 100)
+    assert ct_sim.scheduled is None and "Pre-fire" in ct_sim.last_error
+    assert any(a[0] == "Delayed start cancelled" for a in ct_sim.alarms)
+    # kiln switched on: the check passes and the start stays set
+    ct_sim.ct.fault = None
+    ct_sim.schedule_profile("long", time.time() + 3600)
+    ct_sim.tick()
+    assert ct_sim.state == "SCHEDULED" and ct_sim.prefire["ok"] and not ct_sim.prefire_pending
+
+
+def test_prefire_retry_survives_a_glitch(ct_sim):
+    ct_sim.ct.fault = "no_current"
+    ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
+    ct_sim.tick()
+    ct_sim.ct.fault = None
+    assert _run_until(ct_sim, lambda: not ct_sim.prefire_pending, 50)
+    assert ct_sim.state == "RUNNING" and ct_sim.prefire["ok"] and ct_sim.prefire["try"] == 2
+
+
+def test_stuck_relay_by_current_alerts_without_stopping(ct_sim):
+    ct_sim.run_profile(ct_sim.store.get_profile("long"), allow_seek=False)
+    for _ in range(5):
+        ct_sim.tick()
+    ct_sim.ct.fault = "stuck"
+    for _ in range(20):
+        ct_sim.tick()
+    assert ct_sim.state == "RUNNING" and "stuck" in ct_sim.last_error
+    assert any(a[0] == "KILN ALARM" for a in ct_sim.alarms)
+
+
+def test_loose_ct_hum_is_not_a_stuck_relay():
+    from current import CurrentMonitor
+    m = CurrentMonitor()
+    for t in range(0, 60, 2):
+        # hum well under half the normal element current
+        assert m.add(5.0, False, t, True, normal_amps=39.0) is None
+    m2 = CurrentMonitor()
+    m2.add(30.0, False, 0, True, normal_amps=39.0)
+    assert m2.add(30.0, False, 12, True, normal_amps=39.0)[0] == "stuck"
+
+
+def _fake_sensor(readings):
+    import sensors
+    s = sensors.TempSensorReal()
+    it = iter(readings)
+
+    def raw():
+        v = next(it)
+        if v is None:
+            raise sensors.Max6675_Error("open")
+        return v
+    s.raw_temp = raw
+    return s
+
+
+def test_sensor_glitches_and_stale_readings_mean_no_temperature(monkeypatch):
+    import sensors
+    s = _fake_sensor([500.0] * 10 + [None] * 8 + [500.0] * 30)
+    for _ in range(10):
+        s.temptracker.add(s.get_temperature())
+    assert s.temperature() == 500.0
+    for _ in range(8):
+        s.get_temperature()
+    assert s.temperature() is None            # too many errors: not trustworthy
+    for _ in range(30):
+        s.temptracker.add(s.get_temperature())
+    assert s.temperature() == 500.0           # recovers by itself
+    # nothing good for a while: stale
+    last = s.last_good
+    monkeypatch.setattr(sensors.time, "monotonic", lambda: last + 60)
+    assert s.temperature() is None
+
+
+def test_max6675_pegged_reading_is_an_error():
+    import sensors
+    m = sensors.Max6675.__new__(sensors.Max6675)
+
+    class Dev(object):
+        def __init__(self, raw):
+            self.raw = raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def readinto(self, buf):
+            buf[0], buf[1] = self.raw >> 8, self.raw & 0xFF
+    m.buf = bytearray(2)
+    m.device = Dev(2000 << 3)
+    assert m.raw_temp() == 500.0
+    m.device = Dev(4095 << 3)
+    with pytest.raises(sensors.Max6675_Error) as e:
+        m.raw_temp()
+    assert e.value.message == "thermocouple range fault"
+
+
+def test_no_temperature_holds_elements_off_and_keeps_firing(sim, monkeypatch):
+    import notify
+    alarms = []
+    monkeypatch.setattr(notify.notifier, "send", lambda *a, **k: alarms.append(a) or True)
+    sim.store.save({"name": "long", "temp_units": "c", "data": [[0, 20], [7200, 1000], [9000, 1000]]})
+    sim.run_profile(sim.store.get_profile("long"), allow_seek=False)
+    for _ in range(10):
+        sim.tick()
+    runtime = sim.runtime
+    blind = [True]
+    real = sim.current_temp
+    monkeypatch.setattr(sim, "current_temp", lambda: None if blind[0] else real())
+    for _ in range(200):
+        sim.tick()
+        assert sim.output_level == 0
+    # schedule held: 200 cycles would be 400s (the 100000x simulator drifts a little)
+    assert sim.state == "RUNNING" and sim.runtime - runtime < 200
+    assert any(a[0] == "Thermocouple problem" for a in alarms)
+    blind[0] = False
+    for _ in range(5):
+        sim.tick()
+    assert any(a[0] == "Thermocouple readings are back" for a in alarms)
+    # optional: stop after a while
+    monkeypatch.setitem(settings._values, "tc_error_action", "stop")
+    monkeypatch.setitem(settings._values, "tc_error_stop_minutes", 1)
+    blind[0] = True
+    assert _run_until(sim, lambda: sim.state != "RUNNING", 200)
+
+
+def test_code_error_notifies_and_firing_continues(sim, monkeypatch):
+    import notify
+    alarms = []
+    monkeypatch.setattr(notify.notifier, "send", lambda *a, **k: alarms.append(a) or True)
+    sim.run_profile(sim.store.get_profile("short"), allow_seek=False)
+    sim.handle_internal_error(RuntimeError("i2c hiccup"))
+    assert sim.state == "RUNNING" and sim.output_level == 0
+    assert alarms and alarms[0][0] == "Kiln controller error"
+    monkeypatch.setitem(settings._values, "internal_error_action", "stop")
+    sim.handle_internal_error(RuntimeError("again"))
+    assert sim.state == "IDLE"
+
+
+def test_reset_to_defaults_keeps_hardware(tmp_path):
+    from settings import HARDWARE_KEYS
+    s = Settings(path=str(tmp_path / "s.json"), cfg=Cfg())
+    s.update_from_display({"runaway_minutes": "30", "spi_cs": "5", "stall_detect": "true"})
+    dropped = s.reset_to_defaults(keep=HARDWARE_KEYS)
+    assert set(dropped) == {"runaway_minutes", "stall_detect"}
+    assert s.runaway_minutes == 15 and s.spi_cs == 5 and s.stall_detect is False
+    s.reset_to_defaults()
+    assert s.spi_cs == 22
+    assert Settings(path=str(tmp_path / "s.json"), cfg=Cfg()).spi_cs == 22
