@@ -4,7 +4,7 @@ Kiln Controller
 Turns a Raspberry Pi into an inexpensive, web-enabled kiln controller.
 
 > This is a modernized fork of [jbruce12000/kiln-controller](https://github.com/jbruce12000/kiln-controller):
-> safety features, settings and PID autotune in the web UI, zero-touch install,
+> settings and PID autotune in the web UI, zero-touch install,
 > phone-friendly UI and many fixes. See **[CHANGES.md](CHANGES.md)** for everything
 > that changed and **[docs/install.md](docs/install.md)** to install.
 
@@ -22,9 +22,8 @@ Turns a Raspberry Pi into an inexpensive, web-enabled kiln controller.
   * delayed start ("start in 6 hours" / "start at 5:00 am") from the web UI
   * optional password, protection against other web pages controlling your kiln
   * wiring example for Pi Zero W + MAX6675 + SSRs: [docs/wiring-pi-zero-max6675.md](docs/wiring-pi-zero-max6675.md)
-  * optional current sensor (CT clamp): pre-fire check that the kiln is plugged in and switched on, power loss and stuck relay detection ([docs/current-sensor.md](docs/current-sensor.md))
+  * optional current sensor (CT clamp): live element current and measured energy ([docs/current-sensor.md](docs/current-sensor.md))
   * software updates from the web UI, from any repository and branch, with roll back
-  * safety: stuck relay and no-heat detection, safety contactor and watchdog outputs, systemd and hardware watchdogs ([docs/safety.md](docs/safety.md))
   * phone alerts via ntfy, Pushover or webhooks (Slack, Discord, Home Assistant)
   * backup and restore, schedule import/export
   * works well on a phone, add it to your home screen
@@ -170,7 +169,7 @@ Click **Start** and choose *Start in ...* or *Start at ...*. The delayed start i
 
 ### Alerts
 
-Phone alerts are built in: *Settings &rarr; Safety &amp; Alerts*. The older stand-alone [watcher.py](docs/watcher.md) (Slack) still works if you want a second, independent check from another computer.
+Phone alerts are built in: *Settings &rarr; Alerts*. The older stand-alone [watcher.py](docs/watcher.md) (Slack) still works if you want a second, independent check from another computer.
 
 ### Logging firings to CSV
 

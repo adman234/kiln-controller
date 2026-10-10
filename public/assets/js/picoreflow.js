@@ -743,7 +743,7 @@ function renderSettings() {
         $(this).html(html + '</div>');
     });
     $('#pid_tuned_at').text(v.pid_tuned_at ? "Last autotuned " + fmtDate(v.pid_tuned_at) : "PID values have not been autotuned yet.");
-    $('#set_sensor_board, #set_spi_mode, #set_notify_service, #set_ct_sensor, #set_tc_error_action').on('change', updateSettingsVisibility);
+    $('#set_sensor_board, #set_spi_mode, #set_notify_service, #set_ct_sensor').on('change', updateSettingsVisibility);
     updateSettingsVisibility();
 
     $('.at-unit').html(deg());
@@ -775,7 +775,6 @@ function updateSettingsVisibility() {
     showRow("spi_mode", !isI2C);
     showRow("spi_cs", !isI2C);
     $.each(["spi_sclk", "spi_miso", "spi_mosi"], function (_, k) { showRow(k, !isI2C && spi == "software"); });
-    showRow("tc_error_stop_minutes", $('#set_tc_error_action').val() == "stop");
     var ct = $('#set_ct_sensor').val() != "none";
     $.each(settingsData.schema, function (_, item) {
         if (item.group == "Current sensor" && item.key != "ct_sensor") showRow(item.key, ct);
@@ -822,7 +821,7 @@ function saveSettings() {
 function resetSettings() {
     var keep = $('#reset_keep_hw').is(':checked');
     confirmAction("Reset settings?", keep ?
-        "All safety, firing and current sensor settings go back to their defaults. Your wiring, sensor, alerts, password, units, cost and PID values are kept." :
+        "All firing and current sensor settings go back to their defaults. Your wiring, sensor, alerts, password, units, cost and PID values are kept." :
         "<b>Everything</b> goes back to the defaults, including pins, sensor board, alerts and password. Check your wiring settings afterwards.",
         "Reset", function () {
         apiPost("/api/settings/reset", { keep_hardware: keep }).done(function (resp) {
@@ -1044,9 +1043,6 @@ function currentRows(c) {
     if (c.last) html += row("Last reading", a(c.last.amps) + " with the elements " + (c.last.heater_on ? "ON" : "off") + ago(c.last.time));
     html += row("Last reading with elements on", a(c.on_amps)) +
             row("Counts as on above", a(c.threshold));
-    if (c.prefire) html += row("Last pre-fire check", (c.prefire.ok ? '<span class="text-success">passed</span> ' :
-                              c.prefire.pending ? '<span class="text-warning">no current, trying again</span> ' : '<span class="text-danger">FAILED</span> ') +
-                              a(c.prefire.amps) + (c.prefire.tries > 1 ? " (try " + c.prefire["try"] + " of " + c.prefire.tries + ")" : "") + ago(c.prefire.time));
     return html;
 }
 

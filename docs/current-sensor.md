@@ -1,21 +1,17 @@
 # Current sensor (CT clamp)
 
-A clamp-on current transformer (CT) around one element wire lets the
-controller check that the elements really draw current. It is optional, and
-every check below can be switched on or off under **Settings → Current**.
+A clamp-on current transformer (CT) around one element wire measures the
+current the elements draw. It is optional.
 
-| Check | What it catches | Default |
-| --- | --- | --- |
-| **Pre-fire check** | When a firing or autotune starts, or a restart after a power cut, the elements are switched on for a few seconds. If no current flows, the kiln is unplugged, its switch or breaker is off, or an element or the SSR has failed. It tries 3 times, 20 s apart, so a single glitch doesn't count. If the current sensor itself can't be read, the firing starts anyway with a warning. | on; doesn't start the firing and sends an alert |
-| **Pre-fire check for delayed starts** | Runs straight away when you set up a delayed start, so you find out now rather than at 5am. It runs again when the delayed start begins. | on; cancels the delayed start and sends an alert |
-| **No current while firing** | The elements are switched on but no current flows, for example because the breaker tripped mid-firing. | on, after 60 s of on-time; sends one alert, and another when current comes back. The firing continues |
-| **Current with the elements off** | The SSR has failed stuck on. An urgent alarm is sent within seconds, where the temperature-based check takes about 15 minutes. Only readings above half the normal element current count, so a loose CT picking up hum doesn't set it off. | on, after 10 s; alert only (stopping can't cut the power without a contactor) |
-| **Low current** | One of several elements has burnt out. | off; set a threshold to enable |
-| **Measured energy** | kWh and cost use mains voltage × measured amps instead of the element power setting. | off |
+- **Live reading:** shown under the power LED on the dashboard and under
+  **Settings → Diagnostics**. **Test relay** there shows the current measured
+  during the test.
+- **Measured energy** (off by default): kWh and cost use mains voltage ×
+  measured amps instead of the element power setting.
 
-Live readings and the last pre-fire result are shown under **Settings →
-Diagnostics**. **Test relay** there shows the current measured during the
-test. The dashboard shows the latest reading under the power LED.
+The current sensor checks that used to be here (pre-fire check, no current
+while firing, current with the elements off, low current) have been removed
+pending review.
 
 ## Parts
 

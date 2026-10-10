@@ -1,4 +1,4 @@
-> The controller now sends phone alerts itself (Settings → Safety & Alerts, see [safety.md](safety.md)). watcher.py is still useful as a second, independent check running on another computer.
+> The controller now sends phone alerts itself (Settings → Alerts). watcher.py is still useful as a second, independent check running on another computer.
 
 ### Watcher
 

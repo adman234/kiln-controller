@@ -33,7 +33,6 @@ TC_TYPES = ["B", "E", "J", "K", "N", "R", "S", "T"]
 # current sensor (lib/current.py imports settings, so these live here)
 CT_CHANNELS = [["diff_0_1", "A0 - A1 (differential, recommended)"], ["diff_2_3", "A2 - A3 (differential)"],
                ["a0", "A0 (single ended)"], ["a1", "A1"], ["a2", "A2"], ["a3", "A3"]]
-ACTION_OPTIONS = [["notify", "Keep going, send an alert"], ["stop", "Stop the firing, send an alert"]]
 CT_RANGES = [[4.096, "+/-4.096 V"], [2.048, "+/-2.048 V (for 1 V CTs)"], [1.024, "+/-1.024 V"], [0.512, "+/-0.512 V"]]
 # which thermocouple types each board can linearize
 BOARD_TC_TYPES = {
@@ -103,33 +102,6 @@ SCHEMA = [
     ("Hardware", "sensor_time_wait", "float", "Control cycle (seconds)",
         {"min": 1, "max": 30, "restart": True, "help": "Use 10-30s for mechanical relays/contactors."}),
 
-    ("Safety", "tc_error_action", "choice", "Thermocouple errors or no reading",
-        {"options": ACTION_OPTIONS,
-         "help": "Either way the elements stay OFF while there is no trustworthy reading (treated like the kiln being too hot), "
-                 "the schedule waits, and an alert is sent. Heating resumes by itself when readings come back."}),
-    ("Safety", "tc_error_stop_minutes", "int", "Thermocouple errors: stop after (minutes)",
-        {"min": 1, "max": 600, "help": "Only used when the action above is Stop."}),
-    ("Safety", "internal_error_action", "choice", "Software error in the control loop",
-        {"options": ACTION_OPTIONS, "help": "The elements are switched off for that cycle either way."}),
-    ("Safety", "runaway_detect", "bool", "Detect a relay stuck on (temperature)",
-        {"help": "Alarm if the kiln keeps heating while the elements are off."}),
-    ("Safety", "runaway_action", "choice", "Stuck relay: action",
-        {"options": ACTION_OPTIONS, "help": "Without a safety contactor, stopping cannot cut the power to a stuck SSR."}),
-    ("Safety", "runaway_minutes", "int", "Stuck relay: watch window (minutes)", {"min": 3, "max": 60}),
-    ("Safety", "runaway_rise", "delta", "Stuck relay: rise that triggers the alarm", {"min": 2, "max": 200}),
-    ("Safety", "stall_detect", "bool", "Detect no heating at full power",
-        {"help": "Stop the firing if the kiln does not warm up with the elements fully on: thermocouple out of the kiln, failed element or relay, or the kiln at its limit."}),
-    ("Safety", "stall_minutes", "int", "No heating: watch window (minutes)", {"min": 5, "max": 240}),
-    ("Safety", "stall_rise", "delta", "No heating: minimum rise expected", {"min": 0.5, "max": 100}),
-    ("Safety", "behind_schedule_minutes", "int", "Alert when behind schedule for (minutes)", {"min": 5, "max": 600}),
-    ("Safety", "gpio_contactor", "int", "Safety contactor output pin (BCM, -1 = none)",
-        {"min": -1, "max": 27, "restart": True,
-         "help": "Drives a contactor in series with the SSR. Closed only while firing, opened on any emergency. See docs/safety.md."}),
-    ("Safety", "gpio_contactor_invert", "bool", "Invert contactor output", {"restart": True}),
-    ("Safety", "gpio_heartbeat", "int", "Heartbeat output pin for external watchdog (BCM, -1 = none)",
-        {"min": -1, "max": 27, "restart": True,
-         "help": "Toggles every control cycle. An external watchdog relay can drop power if it stops."}),
-
     ("Current sensor", "ct_sensor", "choice", "Current sensor (CT clamp)",
         {"options": [["none", "None"], ["ads1115", "CT on an ADS1115 ADC (I2C)"]], "restart": True,
          "help": "A clamp-on current transformer around one element wire. See docs/current-sensor.md."}),
@@ -145,28 +117,6 @@ SCHEMA = [
     ("Current sensor", "ct_on_threshold", "float", "Elements count as on above (A)",
         {"min": 0.1, "max": 100, "help": "Well above the reading with the elements off, well below the full element current."}),
     ("Current sensor", "mains_voltage", "float", "Mains voltage at the elements (V)", {"min": 50, "max": 500}),
-    ("Current sensor", "ct_prefire_check", "bool", "Pre-fire check",
-        {"help": "When a firing or autotune starts, switch the elements on briefly and check that current flows."}),
-    ("Current sensor", "ct_prefire_on_schedule", "bool", "Pre-fire check when a delayed start is set",
-        {"help": "Check straight away when you set up a delayed start (and again when it starts), so you find out now, not at 5am."}),
-    ("Current sensor", "ct_prefire_seconds", "float", "Pre-fire check: pulse length (s)", {"min": 1, "max": 10}),
-    ("Current sensor", "ct_prefire_tries", "int", "Pre-fire check: tries before giving up", {"min": 1, "max": 10,
-        "help": "20 seconds apart, so a one-off glitch does not cancel the firing."}),
-    ("Current sensor", "ct_prefire_action", "choice", "Pre-fire check: if there is no current",
-        {"options": [["stop", "Do not start, send an alert"], ["warn", "Start anyway, send an alert"]]}),
-    ("Current sensor", "ct_detect_no_current", "bool", "Detect no current while firing",
-        {"help": "Elements switched on but no current: kiln switched off, breaker tripped, element or relay failed."}),
-    ("Current sensor", "ct_no_current_seconds", "int", "No current: after (seconds of on-time)", {"min": 5, "max": 600}),
-    ("Current sensor", "ct_no_current_action", "choice", "No current: action",
-        {"options": [["warn", "Keep going, send an alert"], ["stop", "Stop the firing, send an alert"]]}),
-    ("Current sensor", "ct_detect_stuck", "bool", "Detect current with the elements off (stuck relay)",
-        {"help": "Urgent alarm within seconds, much faster than the temperature-based check. Counts only above half the "
-                 "normal element current, so a loose CT picking up hum does not trigger it."}),
-    ("Current sensor", "ct_stuck_action", "choice", "Stuck relay: action",
-        {"options": ACTION_OPTIONS, "help": "Without a safety contactor, stopping cannot cut the power to a stuck SSR."}),
-    ("Current sensor", "ct_stuck_seconds", "int", "Stuck relay: after (seconds)", {"min": 2, "max": 300}),
-    ("Current sensor", "ct_low_amps", "float", "Warn if current while on is below (A, 0 = off)",
-        {"min": 0, "max": 200, "help": "Catches one failed element out of several. Set a bit below your normal reading."}),
     ("Current sensor", "ct_energy", "bool", "Use measured current for energy and cost",
         {"help": "kWh = mains voltage x measured amps x on-time, instead of the element power setting."}),
 
@@ -316,21 +266,6 @@ def defaults_from_config(cfg=config):
         "sim_speedup_factor": int(g("sim_speedup_factor", 1)),
         "web_password": str(g("web_password", "")),
 
-        "tc_error_action": str(g("tc_error_action", "notify")),
-        "tc_error_stop_minutes": int(g("tc_error_stop_minutes", 5)),
-        "internal_error_action": str(g("internal_error_action", "notify")),
-        "runaway_detect": bool(g("runaway_detect", True)),
-        "runaway_action": str(g("runaway_action", "notify")),
-        "runaway_minutes": int(g("runaway_minutes", 15)),
-        "runaway_rise": delta("runaway_rise", 20.0),
-        "stall_detect": bool(g("stall_detect", False)),
-        "stall_minutes": int(g("stall_minutes", 45)),
-        "stall_rise": delta("stall_rise", 3.0),
-        "behind_schedule_minutes": int(g("behind_schedule_minutes", 60)),
-        "gpio_contactor": _pin_number(g("gpio_contactor", None), -1),
-        "gpio_contactor_invert": bool(g("gpio_contactor_invert", False)),
-        "gpio_heartbeat": _pin_number(g("gpio_heartbeat", None), -1),
-
         "ct_sensor": str(g("ct_sensor", "none")),
         "ct_i2c_address": str(g("ct_i2c_address", "0x48")),
         "ct_channel": str(g("ct_channel", "diff_0_1")),
@@ -338,18 +273,6 @@ def defaults_from_config(cfg=config):
         "ct_amps_per_volt": float(g("ct_amps_per_volt", 30.0)),
         "ct_on_threshold": float(g("ct_on_threshold", 2.0)),
         "mains_voltage": float(g("mains_voltage", 240.0)),
-        "ct_prefire_check": bool(g("ct_prefire_check", True)),
-        "ct_prefire_on_schedule": bool(g("ct_prefire_on_schedule", True)),
-        "ct_prefire_seconds": float(g("ct_prefire_seconds", 3.0)),
-        "ct_prefire_tries": int(g("ct_prefire_tries", 3)),
-        "ct_prefire_action": str(g("ct_prefire_action", "stop")),
-        "ct_detect_no_current": bool(g("ct_detect_no_current", True)),
-        "ct_no_current_seconds": int(g("ct_no_current_seconds", 60)),
-        "ct_no_current_action": str(g("ct_no_current_action", "warn")),
-        "ct_detect_stuck": bool(g("ct_detect_stuck", True)),
-        "ct_stuck_action": str(g("ct_stuck_action", "notify")),
-        "ct_stuck_seconds": int(g("ct_stuck_seconds", 10)),
-        "ct_low_amps": float(g("ct_low_amps", 0.0)),
         "ct_energy": bool(g("ct_energy", False)),
 
         "update_repo_url": str(g("update_repo_url", DEFAULT_REPO_URL)),
@@ -510,7 +433,7 @@ SECRET_KEYS = [s[1] for s in SCHEMA if s[2] == "password"]
 HARDWARE_KEYS = sorted(set(
     [s[1] for s in SCHEMA if s[0] in ("Sensor", "Hardware", "Notifications", "Updates")] +
     ["ct_sensor", "ct_i2c_address", "ct_channel", "ct_adc_range", "ct_amps_per_volt", "mains_voltage",
-     "gpio_contactor", "gpio_contactor_invert", "gpio_heartbeat", "web_password", "simulate",
+     "web_password", "simulate",
      "temp_scale", "kw_elements", "kwh_rate", "currency_type", "pid_kp", "pid_ki", "pid_kd", "pid_tuned_at"]))
 
 
