@@ -118,5 +118,4 @@ board already has its own gate resistor and pull-down.
 * Keep the thermocouple and SPI wires short, and run them away from the
   mains and element wiring.
 * SSRs need a heatsink at kiln currents.
-* Add the safety contactor described in [safety.md](safety.md).
 * Test before firing: `./test-thermocouple.py` and `./test-output.py`.

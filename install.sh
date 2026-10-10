@@ -133,11 +133,8 @@ say "Installing the systemd service"
 sed -e "s|@USER@|${KILN_USER}|g" -e "s|@DIR@|${INSTALL_DIR}|g" lib/init/kiln-controller.service \
     | ${SUDO} tee /etc/systemd/system/kiln-controller.service > /dev/null
 
-# hardware watchdog: if the whole pi locks up it reboots, and the relay
-# goes off with it
-${SUDO} mkdir -p /etc/systemd/system.conf.d
-printf '[Manager]\nRuntimeWatchdogSec=15s\nRebootWatchdogSec=2min\n' \
-    | ${SUDO} tee /etc/systemd/system.conf.d/kiln-watchdog.conf > /dev/null
+# earlier versions set up the Pi's hardware watchdog; remove that
+${SUDO} rm -f /etc/systemd/system.conf.d/kiln-watchdog.conf
 
 # keep logs from wearing out the SD card
 ${SUDO} mkdir -p /etc/systemd/journald.conf.d

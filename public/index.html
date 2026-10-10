@@ -221,7 +221,7 @@
       <li><a href="#tab_sensor" data-toggle="tab">Sensor</a></li>
       <li><a href="#tab_hardware" data-toggle="tab">Hardware</a></li>
       <li><a href="#tab_current" data-toggle="tab">Current</a></li>
-      <li><a href="#tab_alerts" data-toggle="tab">Safety &amp; Alerts</a></li>
+      <li><a href="#tab_alerts" data-toggle="tab">Alerts</a></li>
       <li><a href="#tab_diag" data-toggle="tab">Diagnostics</a></li>
       <li><a href="#tab_advanced" data-toggle="tab">Advanced</a></li>
      </ul>
@@ -258,9 +258,9 @@
       </div>
       <div class="tab-pane" id="tab_current">
        <div class="alert alert-info small">A clamp-on current transformer (CT) around one element wire, read by an ADS1115 ADC on I2C
-        (SDA = pin 3, SCL = pin 5). It confirms the elements really draw current: a pre-fire check when a firing starts,
-        power loss or a failed element during a firing, and a relay stuck on. Wiring and calibration: <code>docs/current-sensor.md</code>.
-        Live readings are under Diagnostics.</div>
+        (SDA = pin 3, SCL = pin 5). It measures the element current: shown live under Diagnostics, and optionally used
+        for energy and cost. Wiring and calibration: <code>docs/current-sensor.md</code>.
+</div>
        <div data-groups="Current sensor"></div>
       </div>
       <div class="tab-pane" id="tab_alerts">
@@ -268,7 +268,6 @@
        <div class="inline-tools" style="margin:6px 0 4px 0">
         <button type="button" class="btn btn-default btn-sm" onclick="testNotification()"><span class="glyphicon glyphicon-bell"></span> Save &amp; send a test alert</button>
        </div>
-       <div data-groups="Safety"></div>
        <h4>Recent alerts</h4>
        <div id="recent_alerts" class="small"></div>
       </div>

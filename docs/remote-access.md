@@ -32,5 +32,5 @@ for the kiln page itself.
 ## Also
 
 - Set a web password: *Settings &rarr; Advanced &rarr; Web UI password*.
-- Set up phone alerts (*Settings &rarr; Safety &amp; Alerts*). Alerts work
+- Set up phone alerts (*Settings &rarr; Alerts*). Alerts work
   without any remote access: the controller sends them out.

@@ -63,7 +63,7 @@ class Max31856_Error(ThermocoupleError):
 
 
 class Max6675_Error(ThermocoupleError):
-    MAP = {"open": "not connected", "range": "thermocouple range fault"}
+    MAP = {"open": "not connected"}
 
 
 class Max31865_Error(ThermocoupleError):
@@ -182,12 +182,8 @@ class TempSensorSimulated(TempSensor):
 class TempSensorReal(TempSensor):
     '''real sensor that takes temperature_average_samples readings
     per control cycle'''
-    # with no good reading for this long the temperature is unknown
-    STALE_SECONDS = 10.0
-
     def __init__(self):
         TempSensor.__init__(self)
-        self.last_good = None   # time.monotonic() of the last good read
         self.sleeptime = max(self.time_step / float(settings.temperature_average_samples),
                              self.min_sample_interval)
         self.temptracker = TempTracker()
@@ -211,7 +207,6 @@ class TempSensorReal(TempSensor):
             temp = self.raw_temp()  # provided by subclasses
             self.last_raw = temp
             self.last_read_at = time.time()
-            self.last_good = time.monotonic()
             self.status.good()
             return temp
         except ThermocoupleError as tce:
@@ -234,14 +229,6 @@ class TempSensorReal(TempSensor):
         return None
 
     def temperature(self):
-        '''median of recent good readings, or None when the reading can not
-        be trusted: nothing good for STALE_SECONDS, or too many errors
-        (unless ignore_tc_too_many_errors). None keeps the elements off.'''
-        stale = max(self.STALE_SECONDS, 3 * self.time_step)
-        if self.last_good is None or time.monotonic() - self.last_good > stale:
-            return None
-        if self.status.over_error_limit() and not settings.ignore_tc_too_many_errors:
-            return None
         return self.temptracker.get_avg_temp()
 
     def run(self):
@@ -327,10 +314,6 @@ class Max6675(TempSensorReal):
         value = (self.buf[0] << 8) | self.buf[1]
         if value & 0x4:
             raise Max6675_Error("open")
-        # the chip tops out at 1023.75C and then keeps saying so: it can
-        # not see an overheating kiln, so a pegged reading is a fault
-        if (value >> 3) >= 4092:
-            raise Max6675_Error("range")
         return (value >> 3) * 0.25
 
 

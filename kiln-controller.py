@@ -13,7 +13,6 @@ import logging
 import os
 import platform
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -45,7 +44,6 @@ from ovenWatcher import OvenWatcher
 from notify import notifier
 from updater import Updater, UpdateError
 import autotune
-import sdnotify
 
 app = bottle.Bottle()
 store = ProfileStore()
@@ -692,13 +690,32 @@ def api_config():
     return get_config()
 
 
-def shutdown(*_):
-    '''make sure the elements are off whenever we exit'''
-    log.warning("shutting down, turning elements off")
-    try:
-        oven.output_off()
-    finally:
-        os._exit(0)
+def systemd_compat():
+    '''Installs made before the safety features were removed have a service
+    unit with Type=notify and WatchdogSec. Keep such a unit happy until
+    install.sh is run again (it installs a plain unit). Does nothing
+    otherwise, and is not tied to the control loop.'''
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    if addr.startswith("@"):
+        addr = "\0" + addr[1:]
+
+    def send(msg):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+                s.connect(addr)
+                s.sendall(msg)
+        except OSError:
+            pass
+    send(b"READY=1")
+    usec = int(os.environ.get("WATCHDOG_USEC", "0") or 0)
+    if usec:
+        def ping():
+            while True:
+                send(b"WATCHDOG=1")
+                gevent.sleep(usec / 2e6)
+        gevent.spawn(ping)
 
 
 def main():
@@ -706,14 +723,10 @@ def main():
     port = config.listening_port
     oven.start()
     ovenWatcher.start()
-    gevent.signal_handler(signal.SIGTERM, shutdown)
-    gevent.signal_handler(signal.SIGINT, shutdown)
     log.info("listening on %s:%d" % (ip, port))
     server = WSGIServer((ip, port), app, log=None)
     server.start()
-    # tell systemd we are up (Type=notify); the oven loop then keeps the
-    # watchdog fed
-    sdnotify.ready()
+    systemd_compat()
     server.serve_forever()
 
 

@@ -5,7 +5,7 @@ This fork is based on [jbruce12000/kiln-controller](https://github.com/jbruce120
 (as of its merge of PR #186). This page lists everything that changed, so
 you can decide whether it suits you and what to check when moving over.
 
-Install guide: [docs/install.md](docs/install.md). Safety: [docs/safety.md](docs/safety.md).
+Install guide: [docs/install.md](docs/install.md).
 
 ---
 
@@ -38,27 +38,22 @@ Install guide: [docs/install.md](docs/install.md). Safety: [docs/safety.md](docs
 
 ## Safety
 
-- **Relay can no longer be left on by a crash.** The control loop catches
-  every error, turns the elements off and stops the firing. Before, an
-  exception (for example pressing pause while idle) killed the loop with the
-  relay in whatever state it was.
-- systemd forces the relay off before the service starts and after it stops
-  or crashes (`tools/relay-off.py`).
-- **Watchdogs:** the service tells systemd it is alive every cycle and is
-  restarted if it hangs for 90 s; the Pi's hardware watchdog reboots it if
-  the whole Pi locks up.
-- **Safety contactor output:** optional GPIO that drives a contactor in
-  series with the SSR, closed only while firing, opened on any emergency.
-- **Heartbeat output** for an external watchdog relay.
-- **Stuck relay detection:** kiln heating with the elements off (also while
-  idle) triggers an alarm and opens the contactor.
-- **No-heat detection:** elements fully on but no temperature rise
-  (thermocouple out of the kiln, broken element) stops the firing.
-- **Behind schedule alert.**
-- **Phone alerts** built in: ntfy, Pushover or any webhook (Slack, Discord,
-  Home Assistant). Firing finished/stopped, emergencies, sensor problems,
-  power-failure resume, autotune results. Test button in the UI.
-- Fail safe when the sensor gives no reading: elements off for that cycle.
+The fork added a set of safety features (stuck relay and no-heat
+detection, safety contactor and heartbeat outputs, watchdogs, current
+sensor checks, thermocouple-health handling and more). **They have all been
+removed again**, pending a one-by-one review. The controller keeps the two
+protections the original kiln-controller already had: the emergency
+shutoff temperature, and stopping after too many thermocouple errors (both
+can be switched off under *Settings &rarr; Advanced &rarr; Errors*).
+
+What remains in this area:
+
+- Software errors in the control loop are logged and the loop carries on
+  with the next cycle (the original stopped controlling the kiln silently).
+- Phone alerts (ntfy, Pushover or a webhook) for firing finished/started,
+  autotune results and power-failure resume, with a test button.
+- When the sensor has not produced any reading yet (just after start-up),
+  the elements stay off for that cycle instead of the program crashing.
 
 ## Bugs fixed
 
@@ -111,7 +106,7 @@ Install guide: [docs/install.md](docs/install.md). Safety: [docs/safety.md](docs
 ## Features
 
 **Settings in the web UI.** Units, cost, firing behaviour, PID, sensor
-board and type, pins, error handling, safety, alerts, simulation, password.
+board and type, pins, error handling, alerts, simulation, password.
 Settings that need it show "needs restart" and there is a restart button.
 
 **One-click &deg;C / &deg;F.**
@@ -161,7 +156,7 @@ download) without the three CDN libraries it used to load.
   `kiln-settings.json` pre-configure it.
 - **`install.sh`** for manual installs and updates: apt gevent (no
   compiling on a Pi Zero), virtual environment, SPI/I2C, groups, systemd
-  service, watchdogs, log cap, Wi-Fi power-save off. Options for SD card
+  service, log cap, Wi-Fi power-save off. Options for SD card
   protection, Tailscale and pre-set settings.
 - **SD card protection** option: logs and `/tmp` in RAM, no swap file, no
   nightly apt jobs.
@@ -170,7 +165,7 @@ download) without the three CDN libraries it used to load.
 ## Development
 
 - Test suite (`python -m pytest`) covering units, settings, schedules,
-  history, autotune, PID, safety detectors, simulated firings, scheduled
+  history, autotune, PID, simulated firings, scheduled
   starts, power-failure resume, notifications and the live stream.
 - GitHub Actions CI: tests on Python 3.11 and 3.13, lint, shellcheck,
   server smoke test.

@@ -4,29 +4,17 @@
 Description=Kiln controller
 After=network-online.target time-sync.target
 Wants=network-online.target
-# if the service keeps crashing, stop retrying after a while (the relay
-# is forced off each time) instead of looping forever
-StartLimitIntervalSec=600
-StartLimitBurst=10
 
 [Service]
-# Type=notify + WatchdogSec: the control loop reports every cycle. If it
-# hangs, systemd kills the service, ExecStopPost forces the relay off and
-# Restart= starts it again.
-Type=notify
-NotifyAccess=main
-WatchdogSec=90
+Type=simple
 User=@USER@
 Group=@USER@
 WorkingDirectory=@DIR@
 Environment=PYTHONUNBUFFERED=1
-# make sure the elements are off before we start and after we stop/crash
-ExecStartPre=-@DIR@/venv/bin/python @DIR@/tools/relay-off.py
 ExecStart=@DIR@/venv/bin/python @DIR@/kiln-controller.py
-ExecStopPost=-@DIR@/venv/bin/python @DIR@/tools/relay-off.py
+# the web UI's "restart controller" and software update exit and rely on this
 Restart=always
 RestartSec=5
-TimeoutStartSec=120
 # the control loop matters more than anything else on this little computer
 Nice=-5
 # hardening that does not get in the way of GPIO/SPI access

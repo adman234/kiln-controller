@@ -170,12 +170,7 @@ Reboot once if SPI was just enabled: `sudo reboot`.
   `video` groups.
 - A Python virtual environment in `kiln-controller/venv`.
 - The `kiln-controller` systemd service, running as your user (not root). It:
-  - starts on boot and restarts after a crash,
-  - forces the relay **off** before starting and after stopping or crashing,
-  - has a software watchdog: if the control loop hangs for 90 seconds,
-    systemd restarts it (relay forced off in between).
-- The Pi's **hardware watchdog**: if the whole Pi locks up it reboots by
-  itself after 15 seconds.
+  - starts on boot and restarts after a crash.
 - System log capped at 50MB (or kept in RAM with `--protect-sd`).
 - Wi-Fi power saving off (it makes a Zero's web page very sluggish).
 
@@ -209,8 +204,7 @@ When the hardware is wired:
 4. **Settings &rarr; Diagnostics:** the temperature should read room
    temperature and change when you warm the thermocouple. *Test relay*
    clicks the relay for a couple of seconds.
-5. **Settings &rarr; Safety &amp; Alerts:** set up phone alerts and send a test.
-   Read [safety.md](safety.md) about the safety contactor.
+5. **Settings &rarr; Alerts:** set up phone alerts and send a test.
 6. **Settings &rarr; General:** element power (kW) and electricity price.
 7. **Settings &rarr; PID &amp; Autotune:** with an empty kiln, run autotune and
    click *Use* on the recommended values.
