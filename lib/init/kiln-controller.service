@@ -6,12 +6,22 @@ After=network-online.target time-sync.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+# Type=notify + WatchdogSec: the control loop reports every cycle. If it
+# stops for 90 seconds systemd restarts the service and a firing in
+# progress resumes. A second freeze within the safety wait stops the
+# firing (Settings -> Safety).
+Type=notify
+NotifyAccess=main
+WatchdogSec=90
+TimeoutStartSec=120
 User=@USER@
 Group=@USER@
 WorkingDirectory=@DIR@
 Environment=PYTHONUNBUFFERED=1
 ExecStart=@DIR@/venv/bin/python @DIR@/kiln-controller.py
+# remember why the service stopped (e.g. "watchdog"), for the alert sent
+# when the firing resumes
+ExecStopPost=-/bin/sh -c 'echo "$SERVICE_RESULT $(date +%%s)" > @DIR@/storage/last-exit'
 # the web UI's "restart controller" and software update exit and rely on this
 Restart=always
 RestartSec=5

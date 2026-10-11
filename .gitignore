@@ -17,3 +17,5 @@ storage/scheduled.json
 *.tmp
 .pytest_cache/
 __pycache__/
+storage/restarts.json
+storage/last-exit

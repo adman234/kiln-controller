@@ -9,9 +9,19 @@ current the elements draw. It is optional.
 - **Measured energy** (off by default): kWh and cost use mains voltage ×
   measured amps instead of the element power setting.
 
-The current sensor checks that used to be here (pre-fire check, no current
-while firing, current with the elements off, low current) have been removed
-pending review.
+- **Pre-fire check** (on): when a firing or autotune starts (and again at the
+  start time of a delayed start) the elements are switched on for 1 second.
+  If no current flows the screen flashes, you get an alert and the firing
+  waits: switch on the kiln's power switch and press **Try again**, or
+  **Ignore the current sensor** for this firing.
+- **No current while firing** (on, alert only): after 1 minute of on-time
+  with no current. Can be set to stop the firing.
+- **Stuck SSR** (on, alert only): current flowing for 1 minute with the
+  elements off. Can be set to stop the firing.
+- **Low current** (off): warns when the current while on drops below a value
+  you set, e.g. when one element of several burns out.
+
+See also [safety.md](safety.md).
 
 ## Parts
 

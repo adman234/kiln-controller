@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import socket
 import subprocess
@@ -34,7 +35,7 @@ logging.basicConfig(level=config.log_level, format=config.log_format)
 log = logging.getLogger("kiln-controller")
 log.info("Starting kiln controller")
 
-from settings import settings, BOARD_TC_TYPES, SECRET_KEYS, HARDWARE_KEYS, atomic_write_json
+from settings import settings, BOARD_TC_TYPES, SECRET_KEYS, MAX6675_MAX_C, LIMIT_MARGIN_C, HARDWARE_KEYS, atomic_write_json
 from units import (to_display, state_to_display, convert_profile_data,
                    from_display, delta_from_display, pidstats_to_display)
 from profiles import ProfileStore, ProfileError, Profile
@@ -44,6 +45,8 @@ from ovenWatcher import OvenWatcher
 from notify import notifier
 from updater import Updater, UpdateError
 import autotune
+import limits
+import sdnotify
 
 app = bottle.Bottle()
 store = ProfileStore()
@@ -187,6 +190,7 @@ def profile_for_display(p, summary=None):
         "duration": prof.get_duration(),
         "peak": round(to_display(prof.peak(), scale), 1),
         "estimate": est,
+        "warnings": limits.warnings(prof.peak()),
     }
     if summary is not None:
         out["history"] = summary.get(p["name"])
@@ -314,6 +318,13 @@ def handle_api():
         cycles = int(body.get("cycles", 3))
         oven.start_autotune(setpoint, output_high=output_high, hysteresis=hysteresis,
                             cycles=cycles, max_overshoot=max_overshoot)
+
+    elif cmd == 'power_retry':
+        if not oven.power_retry():
+            raise ApiError("not waiting for power")
+
+    elif cmd == 'power_ignore':
+        oven.power_ignore()
 
     elif cmd == 'notify_test':
         notifier.test()
@@ -511,6 +522,8 @@ def api_history_clear():
 def api_settings():
     return {"values": settings.to_display(), "schema": settings.schema(),
             "remote": request_is_remote(),
+            "limits": {"max6675_max": round(to_display(MAX6675_MAX_C, settings.temp_scale)),
+                       "margin": round(delta_from_display_inv(LIMIT_MARGIN_C))},
             "notifications": notifier.recent[-10:],
             "board_tc_types": BOARD_TC_TYPES,
             "autotune_rules": {k: v["label"] for k, v in autotune.RULES.items()}}
@@ -569,6 +582,35 @@ def api_update():
     except UpdateError as e:
         raise ApiError(str(e))
     return {"success": True, "status": updater.status}
+
+
+@app.get('/api/settings/reset-preview')
+@api
+def api_settings_reset_preview():
+    keep = HARDWARE_KEYS if bottle.request.query.get("keep_hardware") == "1" else ()
+    return {"changes": settings.reset_preview(keep=keep)}
+
+
+@app.post('/api/setup/done')
+@api
+def api_setup_done():
+    settings.set("setup_done", True)
+
+
+def detect_board():
+    '''which Raspberry Pi this is, for the pin diagram'''
+    model = read_first_line("/proc/device-tree/model")
+    model = model.replace("\x00", "").strip() if model else ""
+    detected = model.startswith("Raspberry Pi")
+    # the original Model A and B (not A+/B+) have the 26 pin header
+    header = 26 if re.match(r"^Raspberry Pi Model [AB]( Rev \d)?$", model) else 40
+    return {"model": model or None, "detected": detected, "header_pins": header}
+
+
+@app.get('/api/board')
+@api
+def api_board():
+    return detect_board()
 
 
 @app.post('/api/settings/reset')
@@ -690,30 +732,22 @@ def api_config():
     return get_config()
 
 
-def systemd_compat():
-    '''Installs made before the safety features were removed have a service
-    unit with Type=notify and WatchdogSec. Keep such a unit happy until
-    install.sh is run again (it installs a plain unit). Does nothing
-    otherwise, and is not tied to the control loop.'''
-    addr = os.environ.get("NOTIFY_SOCKET")
-    if not addr:
-        return
-    if addr.startswith("@"):
-        addr = "\0" + addr[1:]
+def delta_from_display_inv(dc):
+    '''a temperature difference in C shown in the display scale'''
+    return dc * 9.0 / 5.0 if settings.temp_scale == "f" else dc
 
-    def send(msg):
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
-                s.connect(addr)
-                s.sendall(msg)
-        except OSError:
-            pass
-    send(b"READY=1")
+
+def start_systemd_notify():
+    '''Type=notify: tell systemd we are up. The oven loop feeds the
+    watchdog every cycle (Oven.beat). With the watchdog switched off in
+    Settings, keep the unit happy from a timer instead.'''
+    if not sdnotify.ready():
+        return
     usec = int(os.environ.get("WATCHDOG_USEC", "0") or 0)
-    if usec:
+    if usec and not settings.watchdog_enabled:
         def ping():
             while True:
-                send(b"WATCHDOG=1")
+                sdnotify.watchdog()
                 gevent.sleep(usec / 2e6)
         gevent.spawn(ping)
 
@@ -726,7 +760,7 @@ def main():
     log.info("listening on %s:%d" % (ip, port))
     server = WSGIServer((ip, port), app, log=None)
     server.start()
-    systemd_compat()
+    start_systemd_notify()
     server.serve_forever()
 
 

@@ -1,9 +1,14 @@
 '''Element current sensing with a clamp-on current transformer (CT).
 
 A CT such as the YHDC SCT-013 around one element wire, read by an ADS1115
-ADC over I2C, measures the element current. It is shown live in the UI
-and can optionally be used instead of the nameplate kW for energy and
-cost.
+ADC over I2C, measures the element current:
+
+  - pre-fire check: a 1 second pulse when a firing starts (and when a
+    delayed start is set). No current: the controller waits for you to
+    switch the kiln on and press Try again, or to ignore the sensor
+  - no current while the relay is on: power lost or an element failed
+  - current while the relay is off: the SSR is stuck on
+  - optional: measured amps instead of the nameplate kW for energy and cost
 
 Samples are only taken while the relay holds one state, so every reading
 belongs to a known "on" or "off" period. See docs/current-sensor.md.
@@ -108,3 +113,70 @@ def create_current_sensor(simulate=False):
     except Exception as e:
         log.exception("could not start the current sensor")
         return None, "current sensor (ADS1115 at %s) not found: %s" % (settings.ct_i2c_address, e)
+
+
+class CurrentMonitor(object):
+    '''decides from on/off samples whether something is wrong.
+    add() returns (kind, message) once a problem has lasted long enough.'''
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.no_current_since = None
+        self.stuck_since = None
+        self.low_since = None
+        self.low_warned = False
+        self.no_current_alerted = False
+
+    def add(self, amps, heater_on, now, running, normal_amps=None):
+        '''normal_amps: the usual current with the elements on, if known'''
+        if amps is None:
+            return None
+        threshold = settings.ct_on_threshold
+        # on and off samples alternate; each kind only resets its own timer
+        if heater_on:
+            if amps < threshold:
+                self.low_since = None
+                if not (running and settings.ct_detect_no_current) or self.no_current_alerted:
+                    self.no_current_since = None
+                    return None
+                if self.no_current_since is None:
+                    self.no_current_since = now
+                if now - self.no_current_since >= settings.ct_no_current_seconds:
+                    self.no_current_since = None
+                    self.no_current_alerted = True
+                    return ("no_current", "The elements are switched on but no current flows (%.1f A). "
+                            "Kiln unplugged, breaker or kiln switch off, or an element or relay failed." % amps)
+                return None
+            self.no_current_since = None
+            if self.no_current_alerted:
+                self.no_current_alerted = False
+                return ("current_back", "Current is flowing again (%.1f A)." % amps)
+            low = settings.ct_low_amps
+            if running and low and amps < low and not self.low_warned:
+                if self.low_since is None:
+                    self.low_since = now
+                if now - self.low_since >= 60:
+                    self.low_warned = True
+                    return ("low_current", "Element current is only %.1f A (expected at least %.1f A). "
+                            "An element may have failed." % (amps, low))
+            else:
+                self.low_since = None
+            return None
+
+        # a stuck SSR passes the full element current. A loose or unplugged
+        # CT picking up hum reads far less, so once the normal current is
+        # known only half of it or more counts.
+        if normal_amps:
+            threshold = max(threshold, 0.5 * normal_amps)
+        if amps < threshold or not settings.ct_detect_stuck:
+            self.stuck_since = None
+            return None
+        if self.stuck_since is None:
+            self.stuck_since = now
+        if now - self.stuck_since >= settings.ct_stuck_seconds:
+            self.stuck_since = None
+            return ("stuck", "%.1f A is flowing with the elements switched off. The relay (SSR) is "
+                    "probably stuck on. Switch off power to the kiln." % amps)
+        return None

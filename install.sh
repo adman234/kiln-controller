@@ -133,8 +133,11 @@ say "Installing the systemd service"
 sed -e "s|@USER@|${KILN_USER}|g" -e "s|@DIR@|${INSTALL_DIR}|g" lib/init/kiln-controller.service \
     | ${SUDO} tee /etc/systemd/system/kiln-controller.service > /dev/null
 
-# earlier versions set up the Pi's hardware watchdog; remove that
-${SUDO} rm -f /etc/systemd/system.conf.d/kiln-watchdog.conf
+# hardware watchdog: if the whole Pi locks up it reboots by itself, and a
+# firing in progress resumes (see "Restart the controller if it freezes")
+${SUDO} mkdir -p /etc/systemd/system.conf.d
+printf '[Manager]\nRuntimeWatchdogSec=15s\nRebootWatchdogSec=2min\n' \
+    | ${SUDO} tee /etc/systemd/system.conf.d/kiln-watchdog.conf > /dev/null
 
 # keep logs from wearing out the SD card
 ${SUDO} mkdir -p /etc/systemd/journald.conf.d
@@ -207,12 +210,12 @@ cat <<EOF
   Open  http://${HOST}.local:8081   (or http://${IP}:8081)
 
   The controller starts in SIMULATION mode unless your settings say
-  otherwise, so nothing heats up by accident. When your sensor and relay
-  are wired:
+  otherwise, so nothing heats up by accident. The first time you open the
+  page a setup wizard asks about your wiring (or do it by hand):
     1. Settings -> Sensor / Hardware: pick your board, thermocouple type and pins
     2. Settings -> Advanced: untick "Simulation mode", Save, Restart controller
     3. Settings -> Diagnostics: check the temperature and test the relay
-    4. Settings -> Safety & Alerts: set up phone alerts
+    4. Settings -> Alerts / Safety: set up phone alerts, check the safety options
     5. Settings -> PID & Autotune: run an autotune with the kiln empty
 
   Logs:     journalctl -u kiln-controller -f

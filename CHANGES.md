@@ -38,22 +38,31 @@ Install guide: [docs/install.md](docs/install.md).
 
 ## Safety
 
-The fork added a set of safety features (stuck relay and no-heat
-detection, safety contactor and heartbeat outputs, watchdogs, current
-sensor checks, thermocouple-health handling and more). **They have all been
-removed again**, pending a one-by-one review. The controller keeps the two
-protections the original kiln-controller already had: the emergency
-shutoff temperature, and stopping after too many thermocouple errors (both
-can be switched off under *Settings &rarr; Advanced &rarr; Errors*).
+Full details: [docs/safety.md](docs/safety.md). In short: problems send an
+alert first, and only stop the firing if they are still there after a
+safety wait (5 minutes by default).
 
-What remains in this area:
-
-- Software errors in the control loop are logged and the loop carries on
-  with the next cycle (the original stopped controlling the kiln silently).
-- Phone alerts (ntfy, Pushover or a webhook) for firing finished/started,
-  autotune results and power-failure resume, with a test button.
-- When the sensor has not produced any reading yet (just after start-up),
-  the elements stay off for that cycle instead of the program crashing.
+- **Emergency shutoff temperature**, configurable, with a warning when you
+  start (or edit) a schedule that comes within 50°C / 90°F of it.
+- **MAX6675:** schedules above the chip's 1023°C limit can't be started;
+  a warning within 50°C of it.
+- **Stuck relay**, **no heat** and **thermocouple dropout** detection: alert,
+  then stop after the wait. During a dropout the elements stay off and the
+  schedule waits (the controller never heats blind).
+- **Behind schedule** alert, **software error** alert (the firing carries on).
+- **Software and hardware watchdogs:** a frozen controller or locked-up Pi
+  is restarted and the firing resumes with an alert; a second restart within
+  the wait stops the firing.
+- **Safety contactor** output: closed only while firing.
+- **Current sensor:** 1 second pre-fire test pulse (the screen flashes and
+  asks you to switch the kiln on and try again, or ignore the sensor), no
+  current while firing and stuck SSR alerts after 1 minute (optional stop),
+  low current warning (off by default).
+- **Setup wizard** on first launch, with a GPIO pin map; the **SETUP** button
+  re-runs it or resets settings to defaults (showing what would change).
+- Phone alerts (ntfy, Pushover or a webhook) with a test button.
+- The original "stop after too many thermocouple errors" is replaced by the
+  dropout handling above.
 
 ## Bugs fixed
 

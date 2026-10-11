@@ -182,8 +182,12 @@ class TempSensorSimulated(TempSensor):
 class TempSensorReal(TempSensor):
     '''real sensor that takes temperature_average_samples readings
     per control cycle'''
+    # with no good reading for this long the temperature is unknown
+    STALE_SECONDS = 10.0
+
     def __init__(self):
         TempSensor.__init__(self)
+        self.last_good = None   # time.monotonic() of the last good read
         self.sleeptime = max(self.time_step / float(settings.temperature_average_samples),
                              self.min_sample_interval)
         self.temptracker = TempTracker()
@@ -207,6 +211,7 @@ class TempSensorReal(TempSensor):
             temp = self.raw_temp()  # provided by subclasses
             self.last_raw = temp
             self.last_read_at = time.time()
+            self.last_good = time.monotonic()
             self.status.good()
             return temp
         except ThermocoupleError as tce:
@@ -229,6 +234,15 @@ class TempSensorReal(TempSensor):
         return None
 
     def temperature(self):
+        '''median of recent good readings, or None when the reading can not
+        be trusted: nothing good for STALE_SECONDS, or too many errors
+        (unless ignore_tc_too_many_errors). The oven treats None as a
+        thermocouple dropout.'''
+        stale = max(self.STALE_SECONDS, 3 * self.time_step)
+        if self.last_good is None or time.monotonic() - self.last_good > stale:
+            return None
+        if self.status.over_error_limit() and not settings.ignore_tc_too_many_errors:
+            return None
         return self.temptracker.get_avg_temp()
 
     def run(self):

@@ -93,6 +93,17 @@ pulse the relay (idle only, max 10s) / restart the service
     curl -d '{"cmd":"relay_test", "seconds": 2}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api
     curl -d '{"cmd":"restart"}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api
 
+after a failed pre-fire power check (status `power_wait`): test again, or ignore the current sensor for this firing
+
+    curl -d '{"cmd":"power_retry"}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api
+    curl -d '{"cmd":"power_ignore"}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api
+
+settings a reset to defaults would change, reset, detected Pi model (for the pin map)
+
+    curl http://0.0.0.0:8081/api/settings/reset-preview
+    curl -d '{"keep_hardware": false}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api/settings/reset
+    curl http://0.0.0.0:8081/api/board
+
 send a test alert with the configured notification service
 
     curl -d '{"cmd":"notify_test"}' -H "Content-Type: application/json" -X POST http://0.0.0.0:8081/api

@@ -194,7 +194,14 @@ Unless your `kiln-settings.json` said otherwise, the controller starts in
 **simulation mode** so nothing heats up until you say so. You can try
 everything safely.
 
-When the hardware is wired:
+The first time you open it, a **setup wizard** walks you through units,
+sensor board, relay pin, safety contactor, current sensor, emergency
+temperature and alerts, with a picture of the Pi's GPIO pins to click on.
+*Skip &ndash; use defaults* keeps simulation mode; the **SETUP** button (top
+right) brings the wizard back, or resets everything to defaults. See
+[safety.md](safety.md) for what the safety features do.
+
+When the hardware is wired (or to do it by hand instead of the wizard):
 
 1. **Settings &rarr; Sensor:** your board (MAX31855, MAX31856, MAX6675,
    MCP9600 or MAX31865) and thermocouple type.
