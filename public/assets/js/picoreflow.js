@@ -264,9 +264,39 @@ function openStartModal() {
     $('#sel_prof_peak').html(Math.round(p.peak) + deg());
     $('#sel_prof_cost').html(esc(est[0]));
     $('#sel_prof_cost_how').text(est[1]);
+    var w = p.warnings || [];
+    $('#start_warnings').html(warningsHtml(w));
+    $('#btn_start_confirm').prop('disabled', w.some(function (x) { return x.blocked; }));
     $('input[name=start_when][value=now]').prop('checked', true);
     updateStartWhen();
     $('#jobSummaryModal').modal('show');
+}
+
+function warningsHtml(list) {
+    return $.map(list || [], function (w) {
+        return '<div class="alert alert-' + (w.level == "danger" ? "danger" : "warning") + ' small limit-warning">' +
+               '<span class="glyphicon glyphicon-' + (w.blocked ? "ban-circle" : "warning-sign") + '"></span> ' + esc(w.text) + '</div>';
+    }).join("");
+}
+
+// same checks as lib/limits.py, for the schedule being edited (display units)
+function limitWarnings(peak) {
+    if (!settingsData || !settingsData.limits) return [];
+    var v = settingsData.values, L = settingsData.limits, out = [], u = "\u00b0" + cfg.temp_scale.toUpperCase();
+    var r = function (t) { return Math.round(t) + u; };
+    if (v.sensor_board == "max6675") {
+        if (peak > L.max6675_max)
+            out.push({ level: "danger", blocked: true, text: "This schedule goes to " + r(peak) + ", but the MAX6675 sensor can only read up to " +
+                       r(L.max6675_max) + ". It can not be started. Lower it, or fit a MAX31855 or MAX31856 board." });
+        else if (peak >= L.max6675_max - L.margin)
+            out.push({ level: "warning", text: "This schedule goes to " + r(peak) + ", within " + r(L.margin) + " of the most the MAX6675 sensor can read (" + r(L.max6675_max) + ")." });
+    }
+    var e = Number(v.emergency_shutoff_temp);
+    if (peak >= e)
+        out.push({ level: "danger", text: "This schedule goes to " + r(peak) + ", at or above the emergency shutoff temperature (" + r(e) + "). The firing will be stopped when the kiln gets there." });
+    else if (peak >= e - L.margin)
+        out.push({ level: "warning", text: "This schedule goes to " + r(peak) + ", within " + r(L.margin) + " of the emergency shutoff temperature (" + r(e) + "). A small overshoot could stop the firing." });
+    return out;
 }
 
 function startDelaySeconds() {
@@ -385,7 +415,11 @@ function renderLibrary() {
         html += '<td class="small">' + fmtDate(p.created) + '</td>';
         html += '<td class="small">' + fmtDate(p.modified) + '</td>';
         html += '<td>' + fmtHM(p.duration) + '</td>';
-        html += '<td>' + Math.round(p.peak) + deg() + '</td>';
+        var lw = p.warnings || [];
+        var badge = lw.length ? ' <span class="label label-' + (lw.some(function (x) { return x.blocked; }) ? 'danger' : 'warning') +
+                    '" title="' + esc($.map(lw, function (x) { return x.text; }).join(" ")) + '">' +
+                    (lw.some(function (x) { return x.blocked; }) ? 'too hot' : 'near limit') + '</span>' : '';
+        html += '<td class="text-nowrap">' + Math.round(p.peak) + deg() + badge + '</td>';
         html += '<td class="small">' + (h ? fmtDate(h.last_fired) + ' <span class="text-muted">(' + h.runs + 'x)</span>' : '<span class="text-muted">never</span>') + '</td>';
         html += '<td>' + (p.estimate ? fmtMoney(p.estimate.cost) : '') + '</td>';
         html += '<td class="text-nowrap">' +
@@ -556,6 +590,9 @@ function updateProfileTable() {
         ' to <input type="number" id="seg_temp" class="form-control input-sm" style="width:80px"> ' + deg() +
         ' then hold <input type="number" id="seg_hold" class="form-control input-sm" style="width:70px" value="0"> min ' +
         '<button type="button" class="btn btn-primary btn-sm" onclick="addSegment()">Add</button></div>';
+    var peak = 0;
+    $.each(d, function (_, pt) { peak = Math.max(peak, pt[1]); });
+    html += '<div id="editor_warnings">' + warningsHtml(limitWarnings(peak)) + '</div>';
     html += '<div class="form-group" style="margin-top:10px"><label>Notes</label><textarea id="form_profile_notes" class="form-control" rows="2" maxlength="2000" placeholder="Clay body, cone, glaze, anything you want to remember">' + esc(editor.notes || "") + '</textarea></div>';
     $('#profile_table').html(html);
 }
@@ -745,10 +782,39 @@ function renderSettings() {
     $('#pid_tuned_at').text(v.pid_tuned_at ? "Last autotuned " + fmtDate(v.pid_tuned_at) : "PID values have not been autotuned yet.");
     $('#set_sensor_board, #set_spi_mode, #set_notify_service, #set_ct_sensor').on('change', updateSettingsVisibility);
     updateSettingsVisibility();
+    loadBoard().always(renderSettingsPins);
+    $('#set_sensor_board, #set_spi_mode, #set_ct_sensor, #set_gpio_heat, #set_gpio_contactor, #set_spi_cs, #set_spi_sclk, #set_spi_miso, #set_spi_mosi')
+        .on('change', renderSettingsPins);
 
     $('.at-unit').html(deg());
     if (!$('#at_setpoint').val()) $('#at_setpoint').val(cfg.temp_scale == "f" ? 932 : 500);
     if (!$('#at_hyst').val()) $('#at_hyst').val(cfg.temp_scale == "f" ? 5 : 3);
+}
+
+var boardInfo = null;
+function loadBoard() {
+    if (boardInfo) return $.Deferred().resolve(boardInfo).promise();
+    return apiGet("/api/board").done(function (b) { boardInfo = b; });
+}
+
+// pin diagrams in Settings, editing the #set_* pin fields
+function renderSettingsPins() {
+    var val = function (k) { var $e = $('#set_' + k); return $e.length ? $e.val() : settingsData.values[k]; };
+    var v = { sensor_board: val("sensor_board"), spi_mode: val("spi_mode"), ct_sensor: val("ct_sensor") };
+    var values = {};
+    $.each(["gpio_heat", "gpio_contactor", "spi_cs", "spi_sclk", "spi_miso", "spi_mosi"], function (_, k) { values[k] = Number(val(k)); });
+    var isI2C = v.sensor_board == "mcp9600";
+    if (isI2C) { delete values.spi_cs; }
+    if (isI2C || v.spi_mode == "hardware") { delete values.spi_sclk; delete values.spi_miso; delete values.spi_mosi; }
+    else if (v.sensor_board != "max31856" && v.sensor_board != "max31865") delete values.spi_mosi;
+    var roles = $.grep(["gpio_heat", "spi_cs", "spi_sclk", "spi_miso", "spi_mosi"], function (k) { return k in values; });
+    var b = boardInfo || {};
+    var opts = function (r) {
+        return { header: b.header_pins, model: b.model, values: $.extend({}, values), roles: r, fixed: PinPicker.fixedPins(v),
+                 onChange: function (key, bcm) { $('#set_' + key).val(bcm); renderSettingsPins(); } };
+    };
+    PinPicker.render($('#settings_pins'), opts(roles));
+    PinPicker.render($('#settings_pins_contactor'), opts(["gpio_contactor"]));
 }
 
 function showRow(key, on) { $('.setting-row[data-key=' + key + ']').toggle(on); }
@@ -1041,6 +1107,9 @@ function currentRows(c) {
     var html = row("Status", c.enabled ? '<span class="text-success">reading</span>' : '<span class="label label-danger">not working</span>') +
                (c.error ? row("Error", esc(c.error)) : "");
     if (c.last) html += row("Last reading", a(c.last.amps) + " with the elements " + (c.last.heater_on ? "ON" : "off") + ago(c.last.time));
+    if (c.prefire) html += row("Pre-fire check", (c.prefire.ok ? '<span class="text-success">OK</span>' : '<span class="label label-danger">no current</span>') +
+                               " " + a(c.prefire.amps) + ago(c.prefire.time));
+    if (c.ignored) html += row("This firing", '<span class="label label-warning">ignoring the current sensor</span>');
     html += row("Last reading with elements on", a(c.on_amps)) +
             row("Counts as on above", a(c.threshold));
     return html;
@@ -1184,6 +1253,8 @@ function handleStatus(x) {
 
     if (x.error) $('#error_bar').html('<span class="glyphicon glyphicon-warning-sign"></span> ' + esc(x.error)).show();
     else $('#error_bar').hide();
+    showPowerWait(x.power_wait);
+    showIssues(x.issues);
 
     if (editor.active) return;
 
@@ -1266,6 +1337,36 @@ function handleStatus(x) {
     state_last = state;
 }
 
+function showPowerWait(pw) {
+    if (!pw) { $('#power_overlay').hide(); return; }
+    $('#power_title').text(pw.reason == "sensor" ? "Current sensor not responding" : "No power to the elements");
+    $('#power_msg').text(pw.message || "");
+    $('.power-remind').toggle(pw.reason != "sensor");
+    $('#power_overlay').show();
+}
+
+function powerCmd(cmd) {
+    if (cmd == "stop") {
+        confirmAction("Cancel the firing?", "The elements stay off.", "Cancel firing", function () {
+            apiPost("/api", { cmd: "stop" }).fail(fail("Could not stop"));
+        });
+        return;
+    }
+    apiPost("/api", { cmd: cmd }).done(function () {
+        notify(cmd == "power_retry" ? "Testing the elements again&hellip;" : "Ignoring the current sensor for this firing", "info", 3000);
+    }).fail(fail("Failed"));
+}
+
+function showIssues(list) {
+    if (!list || !list.length) { $('#issues_bar').hide().empty(); return; }
+    var now = Date.now() / 1000;
+    $('#issues_bar').html($.map(list, function (i) {
+        var left = i.stop_at ? i.stop_at - now : null;
+        return '<div class="alert alert-danger issue"><span class="glyphicon glyphicon-alert"></span> <b>' + esc(i.title) + '</b> ' +
+               esc(i.message) + (left !== null ? ' <span class="label label-danger">firing stops in ' + fmtHMS(Math.max(0, left)) + ' if not fixed</span>' : '') + '</div>';
+    }).join("")).show();
+}
+
 function connectStatus() {
     // Server-Sent Events: the browser reconnects by itself
     events = new EventSource("/api/events");
@@ -1330,7 +1431,9 @@ $(document).ready(function () {
     });
     $('#settingsModal').on('hidden.bs.modal', function () { clearInterval(diagTimer); });
 
+    Setup.bind();
     loadConfig().always(function () {
         loadProfiles().always(connectStatus);
+        if (settingsData && !settingsData.values.setup_done) Setup.open();
     });
 });

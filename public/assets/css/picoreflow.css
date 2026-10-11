@@ -451,3 +451,91 @@ body {
 /* element current under the power LED */
 .ds-amps { color: #ddd; font-size: 13px; text-align: center; margin-top: 2px; white-space: nowrap; }
 .update-log { max-height: 220px; overflow-y: auto; white-space: pre-wrap; margin-top: 6px; }
+
+/* ---- GPIO header pin picker ---- */
+.pp-model { margin-bottom: 6px; }
+.pp-roles { margin-bottom: 8px; }
+.pp-roles .pp-role { margin: 2px 0; background: #fff; border-width: 2px; }
+.pp-header {
+    display: inline-block;
+    background: #1c4f2e;
+    border-radius: 6px;
+    padding: 6px 4px;
+    max-width: 100%;
+}
+.pp-row { display: flex; }
+.pp-pin {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: 170px;
+    padding: 1px 3px;
+    font-size: 11px;
+    color: #e8efe8;
+    border-radius: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+.pp-left { justify-content: flex-end; text-align: right; }
+.pp-dot {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    line-height: 18px;
+    text-align: center;
+    border-radius: 50%;
+    border: 2px solid #c9b037;
+    background: #555;
+    color: #fff;
+    font-size: 10px;
+}
+.pp-pin[data-pin="1"] .pp-dot { border-radius: 3px; }
+.pp-3v3 .pp-dot { background: #e67e22; border-color: #e67e22; }
+.pp-5v .pp-dot { background: #c0392b; border-color: #c0392b; }
+.pp-gnd .pp-dot { background: #111; border-color: #111; }
+.pp-3v3, .pp-5v, .pp-gnd { color: #9fb5a5; }
+.pp-fn { color: #9fb5a5; font-size: 10px; }
+.pp-free { cursor: pointer; }
+.pp-free:hover { background: rgba(255,255,255,0.15); }
+.pp-assigned { cursor: pointer; font-weight: normal; }
+.pp-assigned .pp-label b, .pp-fixed .pp-label b { color: #fff; }
+.pp-fixed .pp-dot { background: #7f8c8d; border-color: #bdc3c7; }
+.pp-fixed { color: #cfd8d3; }
+.pp-reserved { opacity: 0.45; }
+.pp-msg { min-height: 1.4em; margin-top: 4px; }
+@media (max-width: 400px) {
+    .pp-pin { width: 46vw; font-size: 10px; }
+    .pp-fn { display: none; }
+}
+
+/* ---- safety ---- */
+#issues_bar .issue { margin-bottom: 6px; }
+.limit-warning { margin-bottom: 8px; }
+#power_overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1035; /* under bootstrap modals, so the cancel confirmation shows */
+    background: rgba(120, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    animation: power-flash 1s ease-in-out infinite alternate;
+}
+@keyframes power-flash {
+    from { background: rgba(120, 0, 0, 0.35); }
+    to   { background: rgba(200, 20, 20, 0.75); }
+}
+#power_overlay .power-box {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    max-width: 560px;
+    width: 100%;
+    box-shadow: 0 6px 30px rgba(0,0,0,0.5);
+}
+#power_overlay h2 { margin-top: 0; color: var(--danger); font-size: 24px; }
+.power-remind { font-size: 16px; }
+.power-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.power-buttons .btn { flex: 1 1 auto; }
+#btn_setup { font-weight: bold; }

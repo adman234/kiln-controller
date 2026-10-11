@@ -22,6 +22,8 @@
  <script src="assets/js/jquery.flot.resize-0.8.3.js"></script>
  <script src="assets/js/bootstrap-3.4.1.min.js"></script>
  <script src="assets/js/picoreflow.js"></script>
+<script src="assets/js/pins.js"></script>
+<script src="assets/js/setup.js"></script>
 
 </head>
 <body>
@@ -41,11 +43,13 @@
     <button type="button" class="btn btn-default btn-sm" onclick="openLibrary()" title="Schedule library"><span class="glyphicon glyphicon-folder-open"></span><span class="hide-phone"> Library</span></button>
     <button type="button" class="btn btn-default btn-sm" onclick="openSettings()" title="Settings, autotune, alerts and diagnostics"><span class="glyphicon glyphicon-cog"></span><span class="hide-phone"> Settings</span></button>
     <a class="btn btn-default btn-sm hide-phone" href="/state" title="Detailed PID state for tuning"><span class="glyphicon glyphicon-stats"></span></a>
+    <button type="button" class="btn btn-info btn-sm" id="btn_setup" onclick="Setup.openMenu()" title="Setup wizard, reset to defaults"><span class="glyphicon glyphicon-wrench"></span> SETUP</button>
    </div>
   </div>
 
   <div id="remote_bar" class="alert alert-danger" style="display:none"></div>
   <div id="error_bar" class="alert alert-danger" style="display:none"></div>
+  <div id="issues_bar" style="display:none"></div>
   <div id="scheduled_bar" class="alert alert-info" style="display:none"></div>
   <div id="tuning_bar" class="alert alert-warning" style="display:none"></div>
 
@@ -135,6 +139,7 @@
       <tr><td>Peak temperature</td><td><b><span id="sel_prof_peak"></span></b></td></tr>
       <tr><td>Estimated energy / cost</td><td><b><span id="sel_prof_cost"></span></b><div class="help-block small" id="sel_prof_cost_how"></div></td></tr>
      </table>
+     <div id="start_warnings"></div>
      <div class="form-group">
       <label>When</label>
       <div class="radio"><label><input type="radio" name="start_when" value="now" checked> Start now</label></div>
@@ -221,6 +226,7 @@
       <li><a href="#tab_sensor" data-toggle="tab">Sensor</a></li>
       <li><a href="#tab_hardware" data-toggle="tab">Hardware</a></li>
       <li><a href="#tab_current" data-toggle="tab">Current</a></li>
+      <li><a href="#tab_safety" data-toggle="tab">Safety</a></li>
       <li><a href="#tab_alerts" data-toggle="tab">Alerts</a></li>
       <li><a href="#tab_diag" data-toggle="tab">Diagnostics</a></li>
       <li><a href="#tab_advanced" data-toggle="tab">Advanced</a></li>
@@ -255,13 +261,24 @@
       <div class="tab-pane" id="tab_hardware">
        <div class="alert alert-info small">Pins use BCM numbering. Changes here need a restart. Double check your wiring before changing the relay pin.</div>
        <div data-groups="Hardware"></div>
+       <h4>Pin map <small>click a function, then a pin</small></h4>
+       <div id="settings_pins"></div>
       </div>
       <div class="tab-pane" id="tab_current">
        <div class="alert alert-info small">A clamp-on current transformer (CT) around one element wire, read by an ADS1115 ADC on I2C
-        (SDA = pin 3, SCL = pin 5). It measures the element current: shown live under Diagnostics, and optionally used
-        for energy and cost. Wiring and calibration: <code>docs/current-sensor.md</code>.
+        (SDA = pin 3, SCL = pin 5). It checks the kiln really draws power: a 1 second test pulse when a firing starts
+        (if there is no current you are asked to switch the kiln on and try again), no current while firing, and current
+        with the elements off (stuck SSR). Wiring and calibration: <code>docs/current-sensor.md</code>.
 </div>
        <div data-groups="Current sensor"></div>
+      </div>
+      <div class="tab-pane" id="tab_safety">
+       <div class="alert alert-info small">Problems that may need you send an alert first. If the problem is still there after
+        the safety wait, the firing is stopped. The emergency shutoff temperature is under Firing.
+        Details: <code>docs/safety.md</code>.</div>
+       <div data-groups="Safety"></div>
+       <h4>Safety contactor <small>pin map</small></h4>
+       <div id="settings_pins_contactor"></div>
       </div>
       <div class="tab-pane" id="tab_alerts">
        <div data-groups="Notifications"></div>
@@ -328,6 +345,65 @@
      <span id="settings_msg" class="pull-left"></span>
      <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
      <button type="button" class="btn btn-primary" onclick="saveSettings()">Save settings</button>
+    </div>
+   </div>
+  </div>
+ </div>
+
+
+ <!-- Power check failed -->
+ <div id="power_overlay" style="display:none">
+  <div class="power-box">
+   <h2><span class="glyphicon glyphicon-flash"></span> <span id="power_title">No power to the elements</span></h2>
+   <p id="power_msg"></p>
+   <p class="power-remind"><b>Is the kiln&rsquo;s power switch on?</b> Turn it on (and check the breaker), then press Try again.</p>
+   <div class="power-buttons">
+    <button type="button" class="btn btn-success btn-lg" onclick="powerCmd('power_retry')"><span class="glyphicon glyphicon-repeat"></span> Try again</button>
+    <button type="button" class="btn btn-default btn-lg" onclick="powerCmd('power_ignore')">Ignore the current sensor</button>
+    <button type="button" class="btn btn-danger btn-lg" onclick="powerCmd('stop')">Cancel firing</button>
+   </div>
+  </div>
+ </div>
+
+ <!-- Setup wizard -->
+ <div id="setupModal" class="modal fade" tabindex="-1" aria-hidden="true" style="display: none;">
+  <div class="modal-dialog modal-lg">
+   <div class="modal-content">
+    <div class="modal-header">
+     <span class="pull-right text-muted small" id="setup_step"></span>
+     <h3 class="modal-title"><span class="glyphicon glyphicon-wrench"></span> Setup: <span id="setup_title"></span></h3>
+    </div>
+    <div class="modal-body" id="setup_body"></div>
+    <div class="modal-footer">
+     <span id="setup_msg" class="pull-left text-danger"></span>
+     <button type="button" class="btn btn-link" id="setup_skip">Skip &ndash; use defaults</button>
+     <button type="button" class="btn btn-default" id="setup_back">Back</button>
+     <button type="button" class="btn btn-primary" id="setup_next">Next</button>
+    </div>
+   </div>
+  </div>
+ </div>
+
+ <!-- SETUP menu -->
+ <div id="setupMenuModal" class="modal fade" tabindex="-1" aria-hidden="true" style="display: none;">
+  <div class="modal-dialog">
+   <div class="modal-content">
+    <div class="modal-header">
+     <button type="button" class="close" data-dismiss="modal" aria-hidden="true">&times;</button>
+     <h3 class="modal-title">Setup</h3>
+    </div>
+    <div class="modal-body">
+     <div id="setup_menu_buttons">
+      <p><button type="button" class="btn btn-primary btn-block" onclick="$('#setupMenuModal').modal('hide'); Setup.open()"><span class="glyphicon glyphicon-wrench"></span> Run the setup wizard</button>
+       <span class="help-block small">Walks through your current settings. Nothing changes until you finish.</span></p>
+      <p><button type="button" class="btn btn-danger btn-block" onclick="Setup.previewReset()"><span class="glyphicon glyphicon-repeat"></span> Reset all settings to defaults and run setup&hellip;</button>
+       <span class="help-block small">Shows what would be reset before anything happens. Schedules and firing history are kept.</span></p>
+     </div>
+     <div id="setup_reset_list" style="display:none"></div>
+    </div>
+    <div class="modal-footer" id="setup_reset_confirm" style="display:none">
+     <button type="button" class="btn btn-default" onclick="Setup.openMenu()">Cancel</button>
+     <button type="button" class="btn btn-danger" onclick="Setup.doReset()">Reset these and run setup</button>
     </div>
    </div>
   </div>
