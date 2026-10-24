@@ -170,20 +170,72 @@ function estimateText(est) {
 
 function replot() {
     var series = [graph.profile, graph.live];
+    // while editing, the axes stay put during a drag (they used to grow with
+    // the point being dragged, which ran away to millions of degrees)
+    if (editor.active && !drag) graph.editXMax = editXMax();
     graph.plot = $.plot("#graph_container", series, getOptions());
+    drawPointDelete();
 }
 
-// Drag schedule points on the graph while editing. Pointer events work
-// for mouse, pen and touch. Points cannot be dragged past their
-// neighbours in time.
+// highest temperature a schedule point can be dragged or typed to: the
+// emergency shutoff (and the most a MAX6675 can read)
+function tempCap() {
+    var v = settingsData && settingsData.values, cap = cfg.temp_scale == "f" ? 2372 : 1300;
+    if (v && Number(v.emergency_shutoff_temp) > 0) cap = Number(v.emergency_shutoff_temp);
+    if (v && v.sensor_board == "max6675" && settingsData.limits) cap = Math.min(cap, settingsData.limits.max6675_max);
+    return Math.round(cap);
+}
+
+// time axis while editing: room after the last point to drag or click into
+function editXMax() {
+    var d = graph.profile.data, last = d.length ? d[d.length - 1][0] : 0;
+    return Math.max(3600, last * 1.25, last + 3600);
+}
+
+function clampTemp(t) { return Math.max(0, Math.min(tempCap(), t)); }
+
+// red x next to the selected point, to delete it
+function drawPointDelete() {
+    var d = graph.profile.data, i = graph.selected;
+    $('#graph_container .pt-del').remove();
+    if (!editor.active || !graph.plot || i == null || i <= 0 || i >= d.length || d.length <= 2 || drag) return;
+    var o = graph.plot.pointOffset({ x: d[i][0], y: d[i][1] });
+    $('<button type="button" class="pt-del" title="Delete this point (or press Delete)">&times;</button>')
+        .css({ left: o.left + 10, top: o.top - 30 }).appendTo('#graph_container');
+}
+
+function deleteSelectedPoint() {
+    var d = graph.profile.data, i = graph.selected;
+    if (i == null || i <= 0 || i >= d.length) return;
+    if (d.length <= 2) { notify("A schedule needs at least two points", "warning", 3000); return; }
+    d.splice(i, 1);
+    graph.selected = null;
+    pointsChanged();
+}
+
+// Edit schedule points on the graph. Pointer events work for mouse, pen
+// and touch. Drag a point to move it (not past its neighbours in time,
+// not above tempCap()), click empty space to add a point, click a point
+// and its x to delete it.
 function bindGraphDrag() {
     var $g = $('#graph_container');
     function canvasPos(e) {
         var off = graph.plot.offset();
         return { x: e.pageX - off.left, y: e.pageY - off.top };
     }
+    function startDrag(el, e, i) {
+        drag = { i: i };
+        graph.selected = i;
+        try { el.setPointerCapture(e.pointerId); } catch (err) {}
+        drawPointDelete();
+    }
+    $g.on('click', '.pt-del', function (ev) {
+        ev.preventDefault();
+        deleteSelectedPoint();
+    });
     $g.on('pointerdown', function (ev) {
         if (!editor.active || !graph.plot) return;
+        if ($(ev.target).closest('.pt-del').length) return;
         var e = ev.originalEvent, pos = canvasPos(e);
         var ax = graph.plot.getAxes(), d = graph.profile.data, best = -1, bestDist = 30;
         for (var i = 0; i < d.length; i++) {
@@ -191,19 +243,26 @@ function bindGraphDrag() {
             var dist = Math.sqrt(dx * dx + dy * dy);
             if (dist < bestDist) { bestDist = dist; best = i; }
         }
-        if (best < 0) return;
-        drag = { i: best, xmax: ax.xaxis.max, ymax: ax.yaxis.max };
-        try { this.setPointerCapture(e.pointerId); } catch (err) {}
         ev.preventDefault();
+        if (best >= 0) { startDrag(this, e, best); return; }
+        // empty space inside the plot: add a point there
+        if (pos.x < 0 || pos.y < 0 || pos.x > graph.plot.width() || pos.y > graph.plot.height()) return;
+        var t = Math.round(ax.xaxis.c2p(pos.x) / 60) * 60, temp = clampTemp(Math.round(ax.yaxis.c2p(pos.y)));
+        var k = 0;
+        while (k < d.length && d[k][0] < t) k++;
+        if (t <= 0 || (k > 0 && t - d[k - 1][0] < 60) || (k < d.length && d[k][0] - t < 60)) return;
+        d.splice(k, 0, [t, temp]);
+        startDrag(this, e, k);
+        replot();
     }).on('pointermove', function (ev) {
         if (!drag) return;
         var e = ev.originalEvent, pos = canvasPos(e), ax = graph.plot.getAxes(), d = graph.profile.data;
         var t = Math.round(ax.xaxis.c2p(pos.x) / 60) * 60;
-        var temp = Math.round(ax.yaxis.c2p(pos.y));
+        var temp = clampTemp(Math.round(ax.yaxis.c2p(pos.y)));
         var lo = drag.i > 0 ? d[drag.i - 1][0] + 60 : 0;
-        var hi = drag.i < d.length - 1 ? d[drag.i + 1][0] - 60 : Infinity;
+        var hi = drag.i < d.length - 1 ? d[drag.i + 1][0] - 60 : graph.editXMax;
         if (drag.i == 0) t = 0;
-        d[drag.i] = [Math.max(lo, Math.min(hi, t)), Math.max(0, temp)];
+        d[drag.i] = [Math.max(lo, Math.min(hi, t)), temp];
         if (!drag.pending) {
             drag.pending = true;
             window.requestAnimationFrame(function () {
@@ -217,6 +276,11 @@ function bindGraphDrag() {
         drag = null;
         replot();
         updateProfileTable();
+    });
+    $(document).on('keydown', function (ev) {
+        if (!editor.active || graph.selected == null) return;
+        if ($(ev.target).is('input, textarea, select')) return;
+        if (ev.key == "Delete" || ev.key == "Backspace") { ev.preventDefault(); deleteSelectedPoint(); }
     });
 }
 
@@ -240,9 +304,9 @@ function getOptions() {
                  variant: "small-caps", color: "rgba(216, 211, 197, 0.85)" };
     return {
         series: { lines: { show: true }, points: { show: true, radius: 5, symbol: "circle" }, shadowSize: 3 },
-        xaxis: { min: 0, tickColor: 'rgba(216, 211, 197, 0.2)', tickFormatter: timeTickFormatter,
-                 tickSize: niceTick(maxx || 3600), font: font },
-        yaxis: { min: 0, tickDecimals: 0, draggable: false, tickColor: 'rgba(216, 211, 197, 0.2)', font: font },
+        xaxis: { min: 0, max: editor.active ? graph.editXMax : null, tickColor: 'rgba(216, 211, 197, 0.2)', tickFormatter: timeTickFormatter,
+                 tickSize: niceTick(editor.active ? graph.editXMax : (maxx || 3600)), font: font },
+        yaxis: { min: 0, max: editor.active ? tempCap() : null, tickDecimals: 0, draggable: false, tickColor: 'rgba(216, 211, 197, 0.2)', font: font },
         grid: { color: 'rgba(216, 211, 197, 0.55)', borderWidth: 1, labelMargin: 10, mouseActiveRadius: 50 },
         legend: { show: false }
     };
@@ -467,6 +531,7 @@ function confirmDelete(name) {
 
 function setEditUI(on) {
     editor.active = on;
+    graph.selected = null;
     $('#profile_table').empty();
     if (on) {
         $('#status').slideUp();
@@ -598,6 +663,7 @@ function updateProfileTable() {
 }
 
 function pointsChanged() {
+    graph.selected = null;   // rows may have moved
     replot();
     updateProfileTable();
 }
@@ -613,6 +679,7 @@ function addSegment() {
     var temp = parseFloat($('#seg_temp').val());
     var hold = parseFloat($('#seg_hold').val()) || 0;
     if (isNaN(temp)) { notify("Enter a target temperature", "danger"); return; }
+    if (temp > tempCap() || temp < 0) { notify("Target must be 0&ndash;" + tempCap() + deg() + " (the emergency shutoff temperature)", "danger"); return; }
     var last = d.length ? d[d.length - 1] : [0, cfg.temp_scale == "f" ? 70 : 20];
     if (!d.length) d.push([0, last[1]]);
     if (temp != last[1]) {
@@ -643,7 +710,8 @@ $(document).on('change', '.pt-temp', function () {
     var row = parseInt($(this).data('row'), 10);
     var v = parseFloat($(this).val());
     if (isNaN(v)) { notify("Not a valid temperature", "danger"); updateProfileTable(); return; }
-    graph.profile.data[row][1] = v;
+    if (v > tempCap() || v < 0) notify("Limited to 0&ndash;" + tempCap() + deg() + " (the emergency shutoff temperature)", "warning", 4000);
+    graph.profile.data[row][1] = clampTemp(v);
     pointsChanged();
 });
 
@@ -908,12 +976,26 @@ function setUnits(unit) {
 }
 
 function restartController() {
-    confirmAction("Restart controller?", "The kiln-controller service restarts and this page reconnects in about 30 seconds. (Only works when installed as a service.)", "Restart", function () {
+    confirmAction("Restart controller?", "The kiln-controller service restarts and this page reconnects by itself (about 30&ndash;60 seconds on a Pi Zero). (Only works when installed as a service.)", "Restart", function () {
         apiPost("/api", { cmd: "restart" }).done(function () {
             notify("Restarting&hellip;", "info");
-            setTimeout(function () { window.location.reload(); }, 20000);
+            reloadWhenBack();
         }).fail(fail("Could not restart"));
     });
+}
+
+// after asking for a restart: give the controller time to go down, then
+// reload as soon as it answers again (a fixed delay was too short on a Zero)
+function reloadWhenBack() {
+    var started = Date.now();
+    var poll = function () {
+        $.ajax({ url: "/api/config", timeout: 3000 }).done(function () { window.location.reload(); })
+            .fail(function () {
+                if (Date.now() - started < 180000) setTimeout(poll, 3000);
+                else window.location.reload();
+            });
+    };
+    setTimeout(poll, 8000);
 }
 
 function loadHistory() {

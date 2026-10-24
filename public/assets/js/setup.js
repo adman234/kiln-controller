@@ -336,27 +336,33 @@ var Setup = (function () {
         if (v.pushover_token) values.pushover_token = v.pushover_token;
         $('#setup_next').prop('disabled', true);
         apiPost("/api/settings", { values: values }).done(function (resp) {
-            markDone();
-            var errs = $.map(resp.errors || {}, function (e) { return esc(e); });
-            if (errs.length) notify("<b>Some settings were not saved</b><br>" + errs.join("<br>"), "danger", 10000);
-            if (resp.restart_required && resp.restart_required.length) {
-                $('#setup_title').text("Almost done");
-                $('#setup_step').text("");
-                $('#setup_body').html('<p>Settings saved. The wiring changes take effect when the controller restarts.</p>' +
-                    '<p><button type="button" class="btn btn-primary" id="setup_restart">Restart the controller now</button></p>' +
-                    '<p class="small text-muted">The page reconnects by itself after about 30 seconds.</p>');
-                $('#setup_back, #setup_next, #setup_skip').hide();
-                $('#setup_restart').on('click', function () {
-                    apiPost("/api", { cmd: "restart" }).done(function () {
-                        $('#setup_body').html('<p>Restarting&hellip;</p>');
-                        setTimeout(function () { window.location.reload(); }, 20000);
-                    }).fail(fail("Could not restart"));
-                });
-            } else {
-                $('#setupModal').modal('hide');
-                window.location.reload();
-            }
+            // wait until "setup done" is saved: reloading straight away can
+            // cancel the request (on a Pi Zero it usually did), and the
+            // wizard then came back on every page load
+            markDone().always(function () { afterSave(resp); });
         }).fail(fail("Could not save")).always(function () { $('#setup_next').prop('disabled', false); });
+    }
+
+    function afterSave(resp) {
+        var errs = $.map(resp.errors || {}, function (e) { return esc(e); });
+        if (errs.length) notify("<b>Some settings were not saved</b><br>" + errs.join("<br>"), "danger", 10000);
+        if (resp.restart_required && resp.restart_required.length) {
+            $('#setup_title').text("Almost done");
+            $('#setup_step').text("");
+            $('#setup_body').html('<p>Settings saved. The wiring changes take effect when the controller restarts.</p>' +
+                '<p><button type="button" class="btn btn-primary" id="setup_restart">Restart the controller now</button></p>' +
+                '<p class="small text-muted">The page reconnects by itself after about 30 seconds.</p>');
+            $('#setup_back, #setup_next, #setup_skip').hide();
+            $('#setup_restart').on('click', function () {
+                apiPost("/api", { cmd: "restart" }).done(function () {
+                    $('#setup_body').html('<p>Restarting&hellip; this page reloads by itself when the controller is back.</p>');
+                    reloadWhenBack();
+                }).fail(fail("Could not restart"));
+            });
+        } else {
+            $('#setupModal').modal('hide');
+            window.location.reload();
+        }
     }
 
     function next() {
