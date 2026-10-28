@@ -1167,7 +1167,11 @@ function refreshDiagnostics() {
                row("Power", y.throttled === undefined ? "&ndash;" :
                    (y.undervoltage_now ? '<span class="label label-danger">UNDER-VOLTAGE NOW</span>' :
                     y.undervoltage_since_boot ? '<span class="label label-warning">under-voltage since boot</span>' : '<span class="text-success">OK</span>')) +
-               row("Python", esc(y.python)) + row("Time", esc(y.time));
+               row("Python", esc(y.python)) + row("Time", esc(y.time)) +
+               (d.public_status && d.public_status.enabled ?
+                   row("Public status page", d.public_status.running ? '<span class="text-success">running</span> on port ' + esc(d.public_status.port) +
+                       (d.public_status.restarts ? " (" + d.public_status.restarts + " restarts)" : "") :
+                       '<span class="label label-danger">not running</span> ' + esc(d.public_status.error || "")) : "");
         $('#diag_system').html(html);
         $('#diag_current_box').toggle(!!d.current);
         if (d.current) $('#diag_current').html(currentRows(d.current));

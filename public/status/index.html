@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <meta name="robots" content="noindex">
+ <title>Kiln status</title>
+ <link rel="stylesheet" href="status.css">
+ <script src="status.js" defer></script>
+</head>
+<body>
+ <main>
+  <header>
+   <h1 id="title">Kiln</h1>
+   <span id="state" class="badge">&hellip;</span>
+  </header>
+  <div id="offline" class="banner warn" hidden>The kiln controller is not responding. The last reading is shown.</div>
+  <div id="attention" class="banner alert" hidden></div>
+  <section class="tiles">
+   <div class="tile"><div class="label">Temperature</div><div class="big"><span id="temp">&ndash;</span><span class="unit" id="unit1"></span></div></div>
+   <div class="tile"><div class="label">Target</div><div class="big muted"><span id="target">&ndash;</span><span class="unit" id="unit2"></span></div></div>
+   <div class="tile"><div class="label">Elements</div><div class="big muted"><span id="heat">&ndash;</span></div></div>
+  </section>
+  <section id="run" hidden>
+   <div class="row"><span id="profile"></span><span id="remaining"></span></div>
+   <div class="bar"><div id="bar"></div></div>
+  </section>
+  <section id="graphbox" hidden>
+   <svg id="graph" viewBox="0 0 600 220" role="img" aria-label="Temperature graph"></svg>
+   <div class="legend"><span class="key actual"></span> kiln <span class="key profile"></span> schedule</div>
+  </section>
+  <footer><span id="updated"></span> &middot; read-only view, refreshes by itself</footer>
+ </main>
+</body>
+</html>
