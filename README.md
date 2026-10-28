@@ -23,6 +23,7 @@ Turns a Raspberry Pi into an inexpensive, web-enabled kiln controller.
   * optional password, protection against other web pages controlling your kiln
   * wiring example for Pi Zero W + MAX6675 + SSRs: [docs/wiring-pi-zero-max6675.md](docs/wiring-pi-zero-max6675.md)
   * optional current sensor (CT clamp): pre-fire power check, stuck SSR / no current alerts, live element current and measured energy ([docs/current-sensor.md](docs/current-sensor.md))
+  * optional public read-only status page to share through a reverse proxy, separate from the controls ([docs/public-status.md](docs/public-status.md))
   * safety features: emergency shutoff, stuck relay, no heat, thermocouple dropout, behind schedule, watchdogs, safety contactor - alert first, stop if not fixed ([docs/safety.md](docs/safety.md))
   * setup wizard on first launch with a picture of the Pi's GPIO pins
   * software updates from the web UI, from any repository and branch, with roll back

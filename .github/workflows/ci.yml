@@ -43,3 +43,4 @@ jobs:
         run: |
           node -e "new Function(require('fs').readFileSync('public/assets/js/picoreflow.js','utf8'))"
           node -e "new Function(require('fs').readFileSync('public/assets/js/state.js','utf8'))"
+          node -e "new Function(require('fs').readFileSync('public/status/status.js','utf8'))"

@@ -657,3 +657,59 @@ def test_reset_preview_lists_changes(tmp_path):
     rows = {r["key"]: r for r in s.reset_preview()}
     assert rows["kw_elements"]["current"] == "11.0" and rows["web_password"]["current"] == "(set)"
     assert "setup_done" in rows
+
+
+# ------------------------------------------------------------ public status
+def _wsgi(app, path, method="GET"):
+    out = {}
+
+    def start_response(status, headers):
+        out["status"], out["headers"] = status, dict(headers)
+    body = b"".join(app({"REQUEST_METHOD": method, "PATH_INFO": path}, start_response))
+    return out["status"], out["headers"], body
+
+
+def test_public_snapshot_has_nothing_private(sim, monkeypatch):
+    import publicstatus
+    from ovenWatcher import OvenWatcher
+    monkeypatch.setitem(settings._values, "notify_url", "https://ntfy.sh/secret-topic")
+    monkeypatch.setitem(settings._values, "web_password", "hunter2")
+    w = OvenWatcher(sim)
+    sim.run_profile(sim.store.get_profile("short"), allow_seek=False)
+    w.record(sim.store.get_profile("short"))
+    for _ in range(20):
+        sim.tick()
+        w.append_log(sim.get_state())
+    snap = publicstatus.snapshot(sim, w)
+    text = json.dumps(snap)
+    for secret in ("secret-topic", "hunter2", "gpio", "spi", "cost", "kwh", "pid"):
+        assert secret not in text
+    assert snap["state"] == "RUNNING" and snap["profile"] == "short" and snap["temperature"] is not None
+    assert 0 <= snap["progress_percent"] <= 100 and len(snap["graph"]["actual"]) >= 2
+    monkeypatch.setitem(settings._values, "public_status_show_profile", False)
+    monkeypatch.setitem(settings._values, "public_status_show_errors", False)
+    sim.last_error = "thermocouple problem"
+    snap = publicstatus.snapshot(sim, w)
+    assert snap["profile"] is None and snap["error"] is None and snap["attention"] is True
+
+
+def test_public_status_server_is_read_only_and_reports_offline():
+    import publicstatus
+    now = [1000.0]
+    app = publicstatus.StatusApp(clock=lambda: now[0])
+    status, headers, body = _wsgi(app, "/")
+    assert status.startswith("200") and b"status.js" in body and "Content-Security-Policy" in headers
+    for method in ("POST", "PUT", "DELETE", "PATCH"):
+        assert _wsgi(app, "/status.json", method)[0].startswith("405")
+    for path in ("/api", "/api/settings", "/picoreflow/index.html", "/../config.py"):
+        assert _wsgi(app, path)[0].startswith("404")
+    # nothing fetched yet: offline
+    assert json.loads(_wsgi(app, "/status.json")[2])["online"] is False
+    app.update(json.dumps({"state": "IDLE", "temperature": 70, "time": 999}))
+    data = json.loads(_wsgi(app, "/status.json")[2])
+    assert data["online"] is True and data["temperature"] == 70
+    assert _wsgi(app, "/status.json", "HEAD")[2] == b""
+    # controller stops answering
+    now[0] += publicstatus.OFFLINE_AFTER + 1
+    data = json.loads(_wsgi(app, "/status.json")[2])
+    assert data == {"online": False, "last_seen": 999}

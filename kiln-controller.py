@@ -44,6 +44,7 @@ from oven import SimulatedOven, RealOven
 from ovenWatcher import OvenWatcher
 from notify import notifier
 from updater import Updater, UpdateError
+import publicstatus
 import autotune
 import limits
 import sdnotify
@@ -76,6 +77,10 @@ class ApiError(Exception):
 @app.hook('before_request')
 def check_request():
     req = bottle.request
+    # the public status page's own server fetches its snapshot over
+    # loopback; that one read-only URL needs no password
+    if req.path == "/api/public-status" and req.method == "GET" and request_is_loopback():
+        return
     # CSRF: a web page on another site must not be able to start your
     # kiln through your browser.
     origin = req.headers.get("Origin")
@@ -160,6 +165,14 @@ def send_static(filename):
 # helpers
 def display_state():
     return state_to_display(oven.get_state(), settings.temp_scale)
+
+
+def request_is_loopback():
+    addr = bottle.request.environ.get("REMOTE_ADDR", "")
+    try:
+        return ipaddress.ip_address(addr).is_loopback
+    except ValueError:
+        return False
 
 
 def request_is_remote():
@@ -682,9 +695,46 @@ def api_diagnostics():
         d[k[:-2]] = to_display(d.get(k), scale) if d.get(k) is not None else None
     return {"sensor": d, "system": system_info(), "state": oven.state, "temp_scale": scale,
             "current": oven.ct_status(),
+            "public_status": dict(public_status, enabled=bool(settings.public_status),
+                                  port=int(settings.public_status_port)),
             "settings": {"sensor_board": settings.sensor_board, "thermocouple_type": settings.thermocouple_type,
                          "spi_mode": settings.spi_mode, "gpio_heat": settings.gpio_heat,
                          "simulate": settings.simulate}}
+
+
+# ---------------------------------------------------------------------
+# public status page: a separate read-only server in a child process
+public_status = {"running": False, "restarts": 0, "error": None}
+
+
+@app.get('/api/public-status')
+@api
+def api_public_status():
+    '''sanitized snapshot for tools/status-server.py, loopback only'''
+    if not settings.public_status or not request_is_loopback():
+        raise ApiError("not found", 404)
+    return publicstatus.snapshot(oven, ovenWatcher)
+
+
+def run_public_status():
+    '''keep the status page server running; it is a separate process so a
+    crash or a flood of visitors there never touches the control loop'''
+    cmd = [sys.executable, os.path.join(script_dir, "tools", "status-server.py"),
+           "--port", str(int(settings.public_status_port)),
+           "--source", "http://127.0.0.1:%d/api/public-status" % config.listening_port]
+    while True:
+        try:
+            proc = subprocess.Popen(cmd)
+            public_status["running"] = True
+            rc = proc.wait()
+            public_status["error"] = "exited with code %s" % rc
+        except Exception as e:
+            log.exception("could not start the public status page")
+            public_status["error"] = str(e)
+        public_status["running"] = False
+        public_status["restarts"] += 1
+        log.warning("public status page stopped (%s), restarting in 10s" % public_status["error"])
+        gevent.sleep(10)
 
 
 # ---------------------------------------------------------------------
@@ -760,6 +810,8 @@ def main():
     log.info("listening on %s:%d" % (ip, port))
     server = WSGIServer((ip, port), app, log=None)
     server.start()
+    if settings.public_status:
+        gevent.spawn(run_public_status)
     start_systemd_notify()
     server.serve_forever()
 

@@ -168,6 +168,17 @@ SCHEMA = [
         {"maxlen": 200, "help": "A git URL, e.g. https://github.com/adman234/kiln-controller"}),
     ("Updates", "update_branch", "str", "Branch", {"maxlen": 100}),
 
+    ("Public status", "public_status", "bool", "Public status page",
+        {"restart": True,
+         "help": "A separate, read-only web page with the temperature, schedule progress and alerts, for sharing outside "
+                 "your network through a reverse proxy (see docs/public-status.md). It has no buttons and can not change "
+                 "anything. Point the proxy at this port only, never at the main page."}),
+    ("Public status", "public_status_port", "int", "Public status page port", {"min": 1024, "max": 65535, "restart": True}),
+    ("Public status", "public_status_title", "str", "Page title", {"maxlen": 60}),
+    ("Public status", "public_status_show_profile", "bool", "Show the schedule name", {}),
+    ("Public status", "public_status_show_errors", "bool", "Show error and alert details",
+        {"help": "Off: the page only says that something needs attention."}),
+
     ("Notifications", "notify_service", "choice", "Send alerts with",
         {"options": [["none", "Nothing"], ["ntfy", "ntfy (free phone app)"], ["pushover", "Pushover"],
                      ["webhook", "Webhook (Slack, Discord, Home Assistant...)"]]}),
@@ -344,6 +355,12 @@ def defaults_from_config(cfg=config):
 
         "update_repo_url": str(g("update_repo_url", DEFAULT_REPO_URL)),
         "update_branch": str(g("update_branch", "main")),
+
+        "public_status": bool(g("public_status", False)),
+        "public_status_port": int(g("public_status_port", 8082)),
+        "public_status_title": str(g("public_status_title", "Kiln")),
+        "public_status_show_profile": bool(g("public_status_show_profile", True)),
+        "public_status_show_errors": bool(g("public_status_show_errors", True)),
 
         "notify_service": str(g("notify_service", "none")),
         "notify_url": str(g("notify_url", "")),
