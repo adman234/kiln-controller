@@ -105,13 +105,38 @@ home IP address:
 1. Move the domain's DNS to Cloudflare, or use it there already, and turn
    the orange cloud (proxied) on for the `kiln` record.
 2. **SSL/TLS mode:** *Full (strict)*. NPM already has a valid certificate.
-3. **Caching → Cache Rules:** for `kiln.yourdomain`, cache everything with
-   an edge TTL of 10 seconds.
-4. **Real visitor IPs in NPM.** Behind Cloudflare, every request comes from
-   a Cloudflare address, so the per-visitor limits above would treat all
-   visitors as one. Add Cloudflare's address ranges to NPM with
-   `set_real_ip_from` and `real_ip_header CF-Connecting-IP;`, or remove the
-   two `limit_` lines and rely on Cloudflare's rate limiting.
+3. **Don't add a cache rule for this host.** Cloudflare doesn't cache HTML
+   or JSON by default, so `status.json` always comes fresh from NPM's 5 s
+   cache. `status.css` and `status.js` are cached by Cloudflare
+   automatically. On the free plan the shortest edge cache time is
+   **2 hours**, so a "cache everything" rule would show hours-old
+   temperatures.
+4. **Per-visitor limits move to Cloudflare.** Behind Cloudflare, and
+   especially behind a **Cloudflare Tunnel**, every request reaches NPM from
+   the same address, so NPM's per-visitor limits would throttle everyone as
+   if they were one visitor. Replace the two `limit_*_zone` lines in
+   `http_top.conf` with one overall limit:
+
+   ```nginx
+   limit_req_zone $server_name zone=kiln_total:1m rate=30r/s;
+   ```
+
+   In the proxy host's Advanced box, replace the two `limit_` lines with
+   `limit_req zone=kiln_total burst=60 nodelay;`.
+
+   Then add a Cloudflare rate limiting rule for per-visitor limits (the
+   free plan allows one): **Security → WAF → Rate limiting rules**. Match
+   *Hostname equals* `kiln.yourdomain`, characteristic *IP*, 30 requests
+   per 10 seconds, action *Block* for 10 seconds.
+5. **With a Cloudflare Tunnel** (no router port forwarding at all):
+   * Point the tunnel's public hostname at NPM's **HTTP** port.
+   * In NPM, use no certificate and leave **Force SSL off**. Cloudflare
+     handles HTTPS, and Force SSL would make the tunnel's HTTP requests
+     redirect forever.
+6. **Hostname depth.** The free certificate covers one level below your
+   domain (`*.example.com`). So `kiln.example.com` works, but
+   `kiln.sub.example.com` gives certificate errors without Advanced
+   Certificate Manager.
 
 Without Cloudflare, the worst a flood can do is make the status page (and
 your internet connection) unreachable for a while. **The kiln keeps firing
