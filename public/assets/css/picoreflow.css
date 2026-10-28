@@ -539,3 +539,12 @@ body {
 .power-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 .power-buttons .btn { flex: 1 1 auto; }
 #btn_setup { font-weight: bold; }
+
+/* delete button next to the selected schedule point while editing */
+#graph_container .pt-del {
+    position: absolute; z-index: 5; width: 24px; height: 24px; padding: 0;
+    border: 0; border-radius: 50%; background: #c9302c; color: #fff;
+    font-size: 18px; font-weight: bold; line-height: 24px; text-align: center;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5); cursor: pointer;
+}
+#graph_container .pt-del:hover { background: #ac2925; }
